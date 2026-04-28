@@ -9,18 +9,19 @@
 
 // =================== CONFIG ===================
 #define NUM_MOTORS 2
+#define NUM_GATES 3
 
-#define DATA_PIN 27
-#define CLOCK_PIN 25
-#define LATCH_PIN 26
+#define DATA_PIN 5
+#define CLOCK_PIN 19
+#define LATCH_PIN 18
 
-#define CONVEYOR_PIN 33
+#define CONVEYOR_PIN 14
 
-#define TRIG1 12
-#define ECHO1 14
+#define TRIG1 32
+#define ECHO1 33
 
-#define TRIG2 18
-#define ECHO2 19
+#define TRIG2 27
+#define ECHO2 26
 
 #define TRIG3 21
 #define ECHO3 22
@@ -30,6 +31,17 @@
 #define STEPS_PER_MOVE 2048   // sesuaikan (1/2 putaran biasanya)
 
 //| =================== GLOBAL VARIABLE ===================
+Servo gateServos[NUM_GATES];
+int gatePins[NUM_GATES] = {25, -1, -1};
+bool gateAttached[NUM_GATES] = {false};
+
+bool gateOpened[NUM_GATES] = {false};
+unsigned long gateOpenTime[NUM_GATES] = {0};
+const int gateDuration = 2000;
+
+unsigned long lastUltrasonicRead = 0;
+const int ultrasonicInterval = 50; // ms (atur 20–100)
+
 unsigned long lastQueueEmptyTime = 0;
 const int stopDelay = 1000;
 
@@ -62,49 +74,78 @@ bool motorStarted = false;
 
 
 //| =================== FUNCTION ===================
+void setupGates() {
+    for (int i = 0; i < NUM_GATES; i++) {
+        if (gatePins[i] != -1){
+            gateServos[i].attach(gatePins[i]);
+            gateServos[i].write(0);
+            gateAttached[i] = true;
+        }
+    }
+}
+
+void updateGates() {
+    for (int i = 0; i < NUM_GATES; i++) {
+        if (!gateAttached[i]) continue;
+
+        if (gateOpened[i] && millis() - gateOpenTime[i] >= gateDuration) {
+            gateServos[i].write(0);
+            gateOpened[i] = false;
+        }
+    }
+}
+
+void openGate(int gate) {
+    int idx = gate - 1;
+
+    if (idx < 0 || idx >= NUM_GATES) return;
+    if (!gateAttached[idx]) return;
+
+    if (!gateOpened[idx]) {
+        gateServos[idx].write(180);
+        gateOpened[idx] = true;
+        gateOpenTime[idx] = millis();
+    }
+}
+
 void processConveyorEnd() {
+  // Serial.println("conveyor queue: " + String(conveyorQueue.size()));
     if (conveyorQueue.empty()) return;
+
+    if (millis() - lastUltrasonicRead < ultrasonicInterval) return;
+    lastUltrasonicRead = millis();
 
     long d1 = readUltrasonic(TRIG1, ECHO1);
     long d2 = readUltrasonic(TRIG2, ECHO2);
     long d3 = readUltrasonic(TRIG3, ECHO3);
 
+    // Serial.print("Ultrasonic: ");
+    // Serial.println(d1);
+
     ConveyorTask ct = conveyorQueue.front();
 
-    // threshold
     bool detect1 = (d1 > 0 && d1 < 10);
     bool detect2 = (d2 > 0 && d2 < 10);
     bool detect3 = (d3 > 0 && d3 < 10);
 
     if (millis() - lastDetectTime < detectCooldown) return;
 
-    // ================= GATE 1 =================
     if (detect1 && ct.gate == 1) {
         lastDetectTime = millis();
-
         Serial.println("Dorong ke Gate 1");
-        // servoGate1();
-
+        openGate(1);
         conveyorQueue.pop();
     }
-
-    // ================= GATE 2 =================
     else if (detect2 && ct.gate == 2) {
         lastDetectTime = millis();
-
         Serial.println("Dorong ke Gate 2");
-        // servoGate2();
-
+        openGate(2);
         conveyorQueue.pop();
     }
-
-    // ================= GATE 3 =================
     else if (detect3 && ct.gate == 3) {
         lastDetectTime = millis();
-
         Serial.println("Dorong ke Gate 3");
-        // servoGate3();
-
+        openGate(3);
         conveyorQueue.pop();
     }
 }
@@ -116,7 +157,7 @@ long readUltrasonic(int trig, int echo) {
     delayMicroseconds(10);
     digitalWrite(trig, LOW);
 
-    long duration = pulseIn(echo, HIGH, 30000);
+    long duration = pulseIn(echo, HIGH, 10000);
     long distance = duration * 0.034 / 2;
 
     return distance;
@@ -167,15 +208,15 @@ void processQueue() {
             // tunggu sampai benar-benar mulai bergerak
             if (!motorStarted && steppers[idx].distanceToGo() != 0) {
                 motorStarted = true;
-                
-                ConveyorTask ct;
-                ct.gate = currentTask.gate;
-
-                conveyorQueue.push(ct);
             }
 
             // baru boleh selesai
             if (motorStarted && steppers[idx].distanceToGo() == 0) {
+                ConveyorTask ct;
+                ct.gate = currentTask.gate;
+
+                conveyorQueue.push(ct);
+                
                 motorBusy = false;
                 Serial.println("Task selesai");
             }
@@ -370,6 +411,8 @@ void reconnect() {
 void setup() {
   Serial.begin(115200);
 
+  setupGates();
+
   pinMode(DATA_PIN, OUTPUT);
   pinMode(CLOCK_PIN, OUTPUT);
   pinMode(LATCH_PIN, OUTPUT);
@@ -412,6 +455,8 @@ void loop() {
 
   runMotors();
   processQueue();
+
+  updateGates();
 
   controlConveyor();
   processConveyorEnd();

@@ -2,6 +2,7 @@
 #define SHIFT_STEPPER_HPP
 
 #include <AccelStepper.h>
+#include <ESP32Servo.h>
 
 class ShiftStepper : public AccelStepper {
 public:
