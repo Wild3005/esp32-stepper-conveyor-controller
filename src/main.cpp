@@ -17,14 +17,14 @@
 
 #define CONVEYOR_PIN 14
 
-#define TRIG1 32
-#define ECHO1 33
+#define TRIG1 21
+#define ECHO1 22
 
 #define TRIG2 27
-#define ECHO2 26
+#define ECHO2 35
 
-#define TRIG3 21
-#define ECHO3 22
+#define TRIG3 32
+#define ECHO3 33
 
 // ================= STEPPER CONFIG =================
 // #define STEPS_PER_MOVE 4096   // sesuaikan (1/2 putaran biasanya)
@@ -72,13 +72,29 @@ Task currentTask;
 
 bool motorStarted = false;
 
+// ================= WIFI & MQTT =================
+unsigned long lastReconnectAttempt = 0;
+
+const char* ssid = "Wild";
+const char* password = "12345678";
+
+// const char* ssid = "Ppppp";
+// const char* password = "12345654";
+
+const char* mqtt_server = "broker.hivemq.com";
+const int mqtt_port = 1883;
+char topics[3][32] = {"vending/VM001/cmd","vending/VM002/cmd","vending/VM003/cmd"};
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
 
 //| =================== FUNCTION ===================
 void setupGates() {
     for (int i = 0; i < NUM_GATES; i++) {
         if (gatePins[i] != -1){
             gateServos[i].attach(gatePins[i]);
-            gateServos[i].write(0);
+            gateServos[i].write(180);
             gateAttached[i] = true;
         }
     }
@@ -89,7 +105,7 @@ void updateGates() {
         if (!gateAttached[i]) continue;
 
         if (gateOpened[i] && millis() - gateOpenTime[i] >= gateDuration) {
-            gateServos[i].write(0);
+            gateServos[i].write(180);
             gateOpened[i] = false;
         }
     }
@@ -102,7 +118,7 @@ void openGate(int gate) {
     if (!gateAttached[idx]) return;
 
     if (!gateOpened[idx]) {
-        gateServos[idx].write(180);
+        gateServos[idx].write(0);
         gateOpened[idx] = true;
         gateOpenTime[idx] = millis();
     }
@@ -119,14 +135,26 @@ void processConveyorEnd() {
     long d2 = readUltrasonic(TRIG2, ECHO2);
     long d3 = readUltrasonic(TRIG3, ECHO3);
 
-    // Serial.print("Ultrasonic: ");
-    // Serial.println(d1);
+    if(d1 > 12){
+      d1 = 0;
+    }
+
+    if(d2 > 12){
+      d2 = 0;
+    }
+
+    if(d3 > 12){
+      d3 = 0;
+    }
+
+    Serial.print("Ultrasonic: ");
+    Serial.println(d1);
 
     ConveyorTask ct = conveyorQueue.front();
 
-    bool detect1 = (d1 > 0 && d1 < 10);
-    bool detect2 = (d2 > 0 && d2 < 10);
-    bool detect3 = (d3 > 0 && d3 < 10);
+    bool detect1 = (d1 > 2 && d1 < 8);
+    bool detect2 = (d2 > 2 && d2 < 8);
+    bool detect3 = (d3 > 2 && d3 < 8);
 
     if (millis() - lastDetectTime < detectCooldown) return;
 
@@ -236,22 +264,6 @@ void shiftOut595(uint8_t data) {
   digitalWrite(LATCH_PIN, HIGH);
 }
 
-// ================= WIFI & MQTT =================
-unsigned long lastReconnectAttempt = 0;
-
-const char* ssid = "Wild";
-const char* password = "12345678";
-
-// const char* ssid = "Ppppp";
-// const char* password = "12345654";
-
-const char* mqtt_server = "broker.hivemq.com";
-const int mqtt_port = 1883;
-const char* topic = "vending/VM001/cmd";
-
-WiFiClient espClient;
-PubSubClient client(espClient);
-
 static const char* mqttStateToStr(int state) {
   switch (state) {
     case MQTT_CONNECTION_TIMEOUT: return "MQTT_CONNECTION_TIMEOUT";      // -4
@@ -329,7 +341,18 @@ void runMotors() {
 
 void callback(char* topic, byte* payload, unsigned int length) {
 
-  int gate = 1; // dari topic (sementara hardcode)
+  int gate;
+
+  if(strcmp(topic, "vending/VM001/cmd")==0){
+    gate = 1;
+  } else if (strcmp(topic, "vending/VM002/cmd") == 0){
+    gate = 2;
+  } else if (strcmp(topic, "vending/VM003/cmd") == 0){
+    gate = 3;
+  } else {
+    Serial.println("Unknown topic: " + String(topic));
+    return;
+  }
 
   StaticJsonDocument<512> doc;
   DeserializationError error = deserializeJson(doc, payload, length);
@@ -397,7 +420,10 @@ void reconnect() {
 
     if (client.connect(clientId.c_str())) {
         Serial.println("connected");
-        client.subscribe(topic);
+        for(char* topic : topics) {
+          client.subscribe(topic);
+          Serial.println("Subscribed to topic: " + String(topic));
+        }
     } else {
         int st = client.state();
         Serial.print("failed, rc=");
@@ -459,5 +485,9 @@ void loop() {
   updateGates();
 
   controlConveyor();
+  // int temp = readUltrasonic(TRIG1, ECHO1); // baca dulu untuk update state
+  // Serial.print("ini di loop: ");
+  // Serial.println(temp);
+  
   processConveyorEnd();
 }

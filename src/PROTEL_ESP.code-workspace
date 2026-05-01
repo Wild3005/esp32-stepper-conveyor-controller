@@ -6,10 +6,6 @@
 		{
 			"name": "protel",
 			"path": ".."
-		},
-		{
-			"name": "DESIOT_MOBIL_AI",
-			"path": "../../DESIOT_MOBIL_AI"
 		}
 	],
 	"settings": {
