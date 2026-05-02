@@ -7,13 +7,13 @@
 class ShiftStepper : public AccelStepper {
 public:
     ShiftStepper(uint8_t motorIndex,
-                 void (*shiftOutFunc)(uint8_t))
+                                 void (*shiftOutFunc)(uint32_t))
         : AccelStepper(AccelStepper::FULL4WIRE, 0,0,0,0),
           _motorIndex(motorIndex),
           _shiftOut(shiftOutFunc) {}
 
     
-    static uint8_t _buffer; // shared antar motor
+    static uint32_t _buffer; // shared antar motor
 
 protected:
     // void setOutputPins(uint8_t mask) override {
@@ -33,10 +33,10 @@ protected:
 
     void setOutputPins(uint8_t mask) override {
     // bersihkan dulu area motor ini
-    _buffer &= ~(0x0F << (_motorIndex * 4));
+    _buffer &= ~(static_cast<uint32_t>(0x0F) << (_motorIndex * 4));
 
     // masukkan data baru
-    uint8_t shifted = (mask & 0x0F) << (_motorIndex * 4);
+    uint32_t shifted = (static_cast<uint32_t>(mask) & 0x0F) << (_motorIndex * 4);
     _buffer |= shifted;
 
     // //| LOG
@@ -52,10 +52,10 @@ protected:
 
 private:
     uint8_t _motorIndex;
-    void (*_shiftOut)(uint8_t);
+    void (*_shiftOut)(uint32_t);
 
 };
 
-uint8_t ShiftStepper::_buffer = 0;
+uint32_t ShiftStepper::_buffer = 0;
 
 #endif

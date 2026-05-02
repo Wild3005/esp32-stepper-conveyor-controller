@@ -4,12 +4,17 @@
 #include <ArduinoJson.h>
 #include <queue>
 #include <vector>
+#include <algorithm>
 
 #include "ShiftStepper.hpp"
 
 // =================== CONFIG ===================
-#define NUM_MOTORS 2
+#define NUM_MOTORS 5
 #define NUM_GATES 3
+
+// Jumlah IC 74HC595 yang diseri (mis. tambah 2 IC dari 1 IC awal => total 3)
+#define SHIFT595_COUNT 3
+#define SHIFT595_BITS (SHIFT595_COUNT * 8)
 
 #define DATA_PIN 5
 #define CLOCK_PIN 19
@@ -17,11 +22,11 @@
 
 #define CONVEYOR_PIN 14
 
-#define TRIG1 21
-#define ECHO1 22
+#define TRIG1 27
+#define ECHO1 35
 
-#define TRIG2 27
-#define ECHO2 35
+#define TRIG2 21
+#define ECHO2 22
 
 #define TRIG3 32
 #define ECHO3 33
@@ -32,7 +37,7 @@
 
 //| =================== GLOBAL VARIABLE ===================
 Servo gateServos[NUM_GATES];
-int gatePins[NUM_GATES] = {25, -1, -1};
+int gatePins[NUM_GATES] = {26, 25, -1};
 bool gateAttached[NUM_GATES] = {false};
 
 bool gateOpened[NUM_GATES] = {false};
@@ -62,10 +67,11 @@ struct ConveyorTask {
 void controlMotor(int item);
 void processQueue();
 void controlConveyor();
-long readUltrasonic(int trig, int echo);
+float readUltrasonic(int trig, int echo);
 void processConveyorEnd();
 
 std::queue<Task> taskQueue;
+std::vector<Task> task;
 std::queue<ConveyorTask> conveyorQueue;
 bool motorBusy = false;
 Task currentTask;
@@ -90,6 +96,7 @@ PubSubClient client(espClient);
 
 
 //| =================== FUNCTION ===================
+
 void setupGates() {
     for (int i = 0; i < NUM_GATES; i++) {
         if (gatePins[i] != -1){
@@ -131,30 +138,33 @@ void processConveyorEnd() {
     if (millis() - lastUltrasonicRead < ultrasonicInterval) return;
     lastUltrasonicRead = millis();
 
-    long d1 = readUltrasonic(TRIG1, ECHO1);
-    long d2 = readUltrasonic(TRIG2, ECHO2);
-    long d3 = readUltrasonic(TRIG3, ECHO3);
+    float d1 = readUltrasonic(TRIG1, ECHO1);
+    float d2 = readUltrasonic(TRIG2, ECHO2);
+    float d3 = readUltrasonic(TRIG3, ECHO3);
 
-    if(d1 > 12){
-      d1 = 0;
-    }
+    // if(d1 > 12){
+    //   d1 = 0;
+    // }
 
-    if(d2 > 12){
-      d2 = 0;
-    }
+    // if(d2 > 12){
+    //   d2 = 0;
+    // }
 
-    if(d3 > 12){
-      d3 = 0;
-    }
+    // if(d3 > 12){
+    //   d3 = 0;
+    // }
 
     Serial.print("Ultrasonic: ");
     Serial.println(d1);
 
     ConveyorTask ct = conveyorQueue.front();
 
-    bool detect1 = (d1 > 2 && d1 < 8);
-    bool detect2 = (d2 > 2 && d2 < 8);
-    bool detect3 = (d3 > 2 && d3 < 8);
+    // bool detect1 = (d1 > 2 && d1 < 8);
+    // bool detect2 = (d2 > 2 && d2 < 8);
+    // bool detect3 = (d3 > 2 && d3 < 8);
+    bool detect1 = (d1 < 6.3f);
+    bool detect2 = (d2 < 6.3f);
+    bool detect3 = (d3 < 6.3f);
 
     if (millis() - lastDetectTime < detectCooldown) return;
 
@@ -178,15 +188,15 @@ void processConveyorEnd() {
     }
 }
 
-long readUltrasonic(int trig, int echo) {
+float readUltrasonic(int trig, int echo) {
     digitalWrite(trig, LOW);
     delayMicroseconds(2);
     digitalWrite(trig, HIGH);
     delayMicroseconds(10);
     digitalWrite(trig, LOW);
 
-    long duration = pulseIn(echo, HIGH, 10000);
-    long distance = duration * 0.034 / 2;
+    float duration = pulseIn(echo, HIGH, 10000);
+    float distance = duration * 0.034f / 2.0f;
 
     return distance;
 }
@@ -219,9 +229,29 @@ void controlMotor(int item) {
 }
 
 void processQueue() {
-    if (!motorBusy && !taskQueue.empty()) {
-        currentTask = taskQueue.front();
-        taskQueue.pop();
+    // if (!motorBusy && !taskQueue.empty()) {
+    //     currentTask = taskQueue.front();
+    //     taskQueue.pop();
+
+    //     controlMotor(currentTask.item);
+    //     motorBusy = true;
+    //     motorStarted = false; // reset
+    // }
+
+    bool is_sorted = std::is_sorted(task.begin(), task.end(), [](const Task& a, const Task& b) {
+        return a.item > b.item;
+    });
+
+    if(!is_sorted) {
+      Serial.println("Sorting task queue...");
+      std::sort(task.begin(), task.end(), [](const Task& a, const Task& b) {
+          return a.item > b.item;
+      });
+    }
+
+    if (!motorBusy && !task.empty()) {
+        currentTask = task.front();
+        task.erase(task.begin());
 
         controlMotor(currentTask.item);
         motorBusy = true;
@@ -252,10 +282,10 @@ void processQueue() {
     }
 }
 
-void shiftOut595(uint8_t data) {
+void shiftOut595(uint32_t data) {
   digitalWrite(LATCH_PIN, LOW);
 
-  for (int i = 7; i >= 0; i--) {
+  for (int i = SHIFT595_BITS - 1; i >= 0; i--) {
     digitalWrite(CLOCK_PIN, LOW);
     digitalWrite(DATA_PIN, (data >> i) & 1);
     digitalWrite(CLOCK_PIN, HIGH);
@@ -282,7 +312,10 @@ static const char* mqttStateToStr(int state) {
 
 ShiftStepper steppers[NUM_MOTORS] = {
   ShiftStepper(0, shiftOut595), // Q0–Q3
-  ShiftStepper(1, shiftOut595)  // Q4–Q7
+  ShiftStepper(1, shiftOut595),  // Q4–Q7
+  ShiftStepper(2, shiftOut595),  // Q8–Q11
+  ShiftStepper(3, shiftOut595),  // Q12–Q15
+  ShiftStepper(4, shiftOut595)   // Q16–Q19
 };
 
 // ================= MOTOR CONTROL =================
@@ -369,7 +402,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
     t.item = item;
     t.gate = gate;
 
-    taskQueue.push(t);
+    // taskQueue.push(t);
+    task.push_back(t);
   }
 }
 
@@ -485,7 +519,7 @@ void loop() {
   updateGates();
 
   controlConveyor();
-  // int temp = readUltrasonic(TRIG1, ECHO1); // baca dulu untuk update state
+  // int temp = readUltrasonic(TRIG2, ECHO2); // baca dulu untuk update state
   // Serial.print("ini di loop: ");
   // Serial.println(temp);
   
