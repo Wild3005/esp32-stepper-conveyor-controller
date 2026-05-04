@@ -154,8 +154,11 @@ void processConveyorEnd() {
     //   d3 = 0;
     // }
 
-    Serial.print("Ultrasonic: ");
+    Serial.print("Ultrasonic1: ");
     Serial.println(d1);
+    Serial.print("Ultrasonic2: ");
+    Serial.println(d2);
+    Serial.print("==============================\n");
 
     ConveyorTask ct = conveyorQueue.front();
 
@@ -239,13 +242,13 @@ void processQueue() {
     // }
 
     bool is_sorted = std::is_sorted(task.begin(), task.end(), [](const Task& a, const Task& b) {
-        return a.item > b.item;
+        return a.item < b.item;
     });
 
     if(!is_sorted) {
       Serial.println("Sorting task queue...");
       std::sort(task.begin(), task.end(), [](const Task& a, const Task& b) {
-          return a.item > b.item;
+          return a.item < b.item;
       });
     }
 
