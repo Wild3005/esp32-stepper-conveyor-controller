@@ -5,12 +5,15 @@
 #include <queue>
 #include <vector>
 #include <algorithm>
+#include <string>
 
 #include "ShiftStepper.hpp"
 
 // =================== CONFIG ===================
 #define NUM_MOTORS 5
 #define NUM_GATES 3
+#define NUM_TOPIC_SUB 3
+#define NUM_TOPIC_PUB 1
 
 // Jumlah IC 74HC595 yang diseri (mis. tambah 2 IC dari 1 IC awal => total 3)
 #define SHIFT595_COUNT 3
@@ -31,11 +34,20 @@
 #define TRIG3 32
 #define ECHO3 33
 
+
 // ================= STEPPER CONFIG =================
 // #define STEPS_PER_MOVE 4096   // sesuaikan (1/2 putaran biasanya)
 #define STEPS_PER_MOVE 2048   // sesuaikan (1/2 putaran biasanya)
 
 //| =================== GLOBAL VARIABLE ===================
+//delay untuk pergatian item yang jauh
+bool waitingDelay = false;
+unsigned long delayStart = 0;
+unsigned long delayDuration = 0;
+
+static int current_index = -1;
+static int prev_index = -1;
+
 Servo gateServos[NUM_GATES];
 int gatePins[NUM_GATES] = {26, 25, -1};
 bool gateAttached[NUM_GATES] = {false};
@@ -89,13 +101,30 @@ const char* password = "12345678";
 
 const char* mqtt_server = "broker.hivemq.com";
 const int mqtt_port = 1883;
-char topics[3][32] = {"vending/VM001/cmd","vending/VM002/cmd","vending/VM003/cmd"};
+char topics[NUM_TOPIC_SUB][32] = {
+  "vending/VM001/cmd",
+  "vending/VM002/cmd",
+  "vending/VM003/cmd"
+};
+
+char pubTopics[NUM_TOPIC_PUB][32] = {
+  "vending/stock" // decrement jika ada barang berkirang / index berkurang
+};
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 
 //| =================== FUNCTION ===================
+
+std::string parsePubJSON(int item){ // parse int to string and json format
+  StaticJsonDocument<200> doc;
+  doc["item"] = item;
+
+  std::string output;
+  serializeJson(doc, output);
+  return output;
+}
 
 void setupGates() {
     for (int i = 0; i < NUM_GATES; i++) {
@@ -242,19 +271,29 @@ void processQueue() {
     // }
 
     bool is_sorted = std::is_sorted(task.begin(), task.end(), [](const Task& a, const Task& b) {
-        return a.item < b.item;
+        return a.item > b.item;
     });
 
     if(!is_sorted) {
       Serial.println("Sorting task queue...");
       std::sort(task.begin(), task.end(), [](const Task& a, const Task& b) {
-          return a.item < b.item;
+          return a.item > b.item;
       });
     }
 
     if (!motorBusy && !task.empty()) {
         currentTask = task.front();
         task.erase(task.begin());
+
+        //| PUBLISH
+        std::string payload = parsePubJSON(currentTask.item);
+        bool ok = client.publish(pubTopics[0], payload.c_str());
+
+        if(ok){
+            Serial.println("Publish success");
+        }else{
+            Serial.println("Publish failed");
+        }
 
         controlMotor(currentTask.item);
         motorBusy = true;
@@ -263,6 +302,54 @@ void processQueue() {
 
     if (motorBusy) {
         int idx = currentTask.item - 1;
+
+        current_index = idx;
+
+        if(prev_index != -1){
+          if(prev_index < current_index){
+            if(current_index % 2 == 0){
+              int diff = abs(current_index - prev_index);
+              if(!(diff < 3)){
+                // todo delay (0.1 * diff) detik
+                if(!waitingDelay){
+                  delayDuration = 100 * diff;
+                  delayStart = millis();
+
+                  waitingDelay = true;
+
+                  Serial.print("Start delay: ");
+                  Serial.println(delayDuration);
+                }
+              }
+            }
+
+            if(current_index % 2 == 1){
+              int diff = abs(current_index - prev_index);
+              if(!(diff < 4)){
+                // todo delay (0.1 * diff) detik
+                if(!waitingDelay){
+                  delayDuration = 100 * diff;
+                  delayStart = millis();
+
+                  waitingDelay = true;
+
+                  Serial.print("Start delay: ");
+                  Serial.println(delayDuration);
+                }
+              }
+            }
+          }
+        }
+
+        if(waitingDelay){
+            if(millis() - delayStart >= delayDuration){
+            waitingDelay = false;
+            Serial.println("Delay selesai");
+          }else{
+            // menunggu delay
+            return;
+          }
+        }
 
         if (idx >= 0 && idx < NUM_MOTORS) {
 
@@ -280,6 +367,8 @@ void processQueue() {
                 
                 motorBusy = false;
                 Serial.println("Task selesai");
+
+                prev_index = current_index;
             }
         }
     }
@@ -287,7 +376,6 @@ void processQueue() {
 
 void shiftOut595(uint32_t data) {
   digitalWrite(LATCH_PIN, LOW);
-
   for (int i = SHIFT595_BITS - 1; i >= 0; i--) {
     digitalWrite(CLOCK_PIN, LOW);
     digitalWrite(DATA_PIN, (data >> i) & 1);
