@@ -6,14 +6,19 @@
 
 class ShiftStepper : public AccelStepper {
 public:
-    ShiftStepper(uint8_t motorIndex,
-                                 void (*shiftOutFunc)(uint32_t))
+    ShiftStepper(uint8_t motorIndex, void (*shiftOutFunc)(uint8_t*,size_t))
         : AccelStepper(AccelStepper::FULL4WIRE, 0,0,0,0),
           _motorIndex(motorIndex),
           _shiftOut(shiftOutFunc) {}
 
     
-    static uint32_t _buffer; // shared antar motor
+    static uint8_t* _buffer; // shared antar motor
+    static size_t _bufferSize; // ukuran buffer dalam byte
+
+    static void begin(uint8_t* buffer, size_t size){
+        _buffer = buffer;
+        _bufferSize = size;
+    }
 
 protected:
     // void setOutputPins(uint8_t mask) override {
@@ -31,31 +36,53 @@ protected:
     //     _shiftOut(_buffer);
     // }
 
+    // void setOutputPins(uint8_t mask) override {
+    //     // bersihkan dulu area motor ini
+    //     _buffer &= ~(static_cast<uint32_t>(0x0F) << (_motorIndex * 4));
+
+    //     // masukkan data baru
+    //     uint32_t shifted = (static_cast<uint32_t>(mask) & 0x0F) << (_motorIndex * 4);
+    //     _buffer |= shifted;
+
+    //     // //| LOG
+    //     // Serial.print("M");
+    //     // Serial.print(_motorIndex);
+    //     // Serial.print(" MASK: ");
+    //     // Serial.print(mask, BIN);
+    //     // Serial.print(" BUFFER: ");
+    //     // Serial.println(_buffer, BIN);
+
+    //     _shiftOut(_buffer);
+    // }
+
     void setOutputPins(uint8_t mask) override {
-    // bersihkan dulu area motor ini
-    _buffer &= ~(static_cast<uint32_t>(0x0F) << (_motorIndex * 4));
 
-    // masukkan data baru
-    uint32_t shifted = (static_cast<uint32_t>(mask) & 0x0F) << (_motorIndex * 4);
-    _buffer |= shifted;
+        int bitPos = _motorIndex * 4;
 
-    // //| LOG
-    // Serial.print("M");
-    // Serial.print(_motorIndex);
-    // Serial.print(" MASK: ");
-    // Serial.print(mask, BIN);
-    // Serial.print(" BUFFER: ");
-    // Serial.println(_buffer, BIN);
+        int byteIndex = bitPos / 8;
+        int bitOffset = bitPos % 8;
 
-    _shiftOut(_buffer);
-}
+        if(byteIndex >= _bufferSize) return;
+
+        _buffer[byteIndex] &= ~(0x0F << bitOffset);
+
+        _buffer[byteIndex] |=
+            static_cast<uint8_t>((mask & 0x0F) << bitOffset);
+
+        _shiftOut(_buffer, _bufferSize);
+    }
+
+
+
 
 private:
     uint8_t _motorIndex;
-    void (*_shiftOut)(uint32_t);
+    void (*_shiftOut)(uint8_t*, size_t);
 
 };
 
-uint32_t ShiftStepper::_buffer = 0;
+// uint32_t ShiftStepper::_buffer = 0;
+uint8_t* ShiftStepper::_buffer = nullptr;
+size_t ShiftStepper::_bufferSize = 0;
 
 #endif

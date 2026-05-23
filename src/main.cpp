@@ -17,7 +17,8 @@
 
 // Jumlah IC 74HC595 yang diseri (mis. tambah 2 IC dari 1 IC awal => total 3)
 #define SHIFT595_COUNT 3
-#define SHIFT595_BITS (SHIFT595_COUNT * 8)
+// #define SHIFT595_BITS (SHIFT595_COUNT * 8)
+
 
 #define DATA_PIN 5
 #define CLOCK_PIN 19
@@ -40,6 +41,8 @@
 #define STEPS_PER_MOVE 2048   // sesuaikan (1/2 putaran biasanya)
 
 //| =================== GLOBAL VARIABLE ===================
+uint8_t shiftBuffer[SHIFT595_COUNT] = {0};
+
 //delay untuk pergatian item yang jauh
 bool waitingDelay = false;
 unsigned long delayStart = 0;
@@ -374,12 +377,11 @@ void processQueue() {
     }
 }
 
-void shiftOut595(uint32_t data) {
+void shiftOut595(uint8_t* data, size_t size) {
   digitalWrite(LATCH_PIN, LOW);
-  for (int i = SHIFT595_BITS - 1; i >= 0; i--) {
-    digitalWrite(CLOCK_PIN, LOW);
-    digitalWrite(DATA_PIN, (data >> i) & 1);
-    digitalWrite(CLOCK_PIN, HIGH);
+
+  for(int i = (int)size - 1; i >= 0; i--){
+    shiftOut(DATA_PIN, CLOCK_PIN, MSBFIRST, data[i]);
   }
 
   digitalWrite(LATCH_PIN, HIGH);
@@ -421,16 +423,17 @@ void runMotors() {
   bool anyRunning = false;
 
   for (int i = 0; i < NUM_MOTORS; i++) {
+    steppers[i].run();
+
     if (steppers[i].distanceToGo() != 0) {
       anyRunning = true;
     }
-    steppers[i].run();
   }
 
   if (!anyRunning) {
-    shiftOut595(0); // matikan coil
+    memset(shiftBuffer, 0, sizeof(shiftBuffer));
+    shiftOut595(shiftBuffer, SHIFT595_COUNT);
   }
-  
 }
 
 // ================= MQTT CALLBACK =================
@@ -578,6 +581,8 @@ void setup() {
 
   pinMode(TRIG3, OUTPUT);
   pinMode(ECHO3, INPUT);
+
+  ShiftStepper::begin(shiftBuffer, SHIFT595_COUNT);
 
   randomSeed(micros());
 
