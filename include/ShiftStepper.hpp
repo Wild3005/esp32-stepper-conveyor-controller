@@ -6,10 +6,22 @@
 
 class ShiftStepper : public AccelStepper {
 public:
+    ShiftStepper()
+        : AccelStepper(AccelStepper::FULL4WIRE, 0,0,0,0),
+          _motorIndex(0),
+          _shiftOut(nullptr)
+    {}
+
     ShiftStepper(uint8_t motorIndex, void (*shiftOutFunc)(uint8_t*,size_t))
         : AccelStepper(AccelStepper::FULL4WIRE, 0,0,0,0),
           _motorIndex(motorIndex),
           _shiftOut(shiftOutFunc) {}
+
+    void init(uint8_t index,
+              void (*callback)(uint8_t*, size_t)){
+        _motorIndex = index;
+        _shiftOut = callback;
+    }
 
     
     static uint8_t* _buffer; // shared antar motor
@@ -55,21 +67,60 @@ protected:
     //     _shiftOut(_buffer);
     // }
 
+    // void setOutputPins(uint8_t mask) override {
+
+    //     int bitPos = _motorIndex * 4;
+
+    //     int byteIndex = bitPos / 8;
+    //     int bitOffset = bitPos % 8;
+
+    //     if(byteIndex >= _bufferSize) return;
+
+    //     _buffer[byteIndex] &= ~(0x0F << bitOffset);
+
+    //     _buffer[byteIndex] |=
+    //         static_cast<uint8_t>((mask & 0x0F) << bitOffset);
+
+    //     _shiftOut(_buffer, _bufferSize);
+    // }
+
     void setOutputPins(uint8_t mask) override {
 
         int bitPos = _motorIndex * 4;
 
-        int byteIndex = bitPos / 8;
-        int bitOffset = bitPos % 8;
+        // Validate buffer is initialized
+        if(_buffer == nullptr || _bufferSize == 0) {
+            return;
+        }
 
-        if(byteIndex >= _bufferSize) return;
+        // Check if motor index will exceed buffer size
+        int lastBitNeeded = bitPos + 3; // 4 bits per motor
+        int lastByteNeeded = lastBitNeeded / 8;
+        if(lastByteNeeded >= _bufferSize) {
+            // Motor index exceeds buffer capacity
+            return;
+        }
 
-        _buffer[byteIndex] &= ~(0x0F << bitOffset);
+        for(int i = 0; i < 4; i++) {
 
-        _buffer[byteIndex] |=
-            static_cast<uint8_t>((mask & 0x0F) << bitOffset);
+            int absoluteBit = bitPos + i;
 
-        _shiftOut(_buffer, _bufferSize);
+            int byteIndex = absoluteBit / 8;
+
+            int bitIndex = absoluteBit % 8;
+
+            if(byteIndex >= _bufferSize) return;
+
+            if(mask & (1 << i)) {
+                _buffer[byteIndex] |= (1 << bitIndex);
+            } else {
+                _buffer[byteIndex] &= ~(1 << bitIndex);
+            }
+        }
+
+        if(_shiftOut != nullptr) {
+            _shiftOut(_buffer, _bufferSize);
+        }
     }
 
 
