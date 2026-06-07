@@ -40,8 +40,8 @@ size_t SHIFT595_COUNT = 2;
 #define TRIG2 32
 #define ECHO2 33
 
-#define TRIG3 27
-#define ECHO3 26
+#define TRIG3 26
+#define ECHO3 27
 
 
 // ================= STEPPER CONFIG =================
@@ -241,15 +241,15 @@ void processConveyorEnd() {
     float d2 = readUltrasonic(TRIG2, ECHO2);
     float d3 = readUltrasonic(TRIG3, ECHO3);
 
-    if(d1 > 8){
+    if(d1 > 4){
       d1 = 0;
     }
 
-    if(d2 > 8){
+    if(d2 > 4){
       d2 = 0;
     }
 
-    if(d3 > 8){
+    if(d3 > 4){
       d3 = 0;
     }
 
@@ -263,9 +263,9 @@ void processConveyorEnd() {
 
     ConveyorTask ct = conveyorQueue.front();
 
-    bool detect1 = (d1 > 2 && d1 < 8);
-    bool detect2 = (d2 > 2 && d2 < 8);
-    bool detect3 = (d3 > 2 && d3 < 8);
+    bool detect1 = (d1 > 2 && d1 < 4);
+    bool detect2 = (d2 > 2 && d2 < 4);
+    bool detect3 = (d3 > 2 && d3 < 4);
 
     // bool detect1 = (d1 < 6.3f);
     // bool detect2 = (d2 < 6.3f);
