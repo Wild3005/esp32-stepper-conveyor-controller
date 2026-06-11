@@ -117,7 +117,8 @@ const char* password = "12345678";
 // const char* ssid = "Ppppp";
 // const char* password = "12345654";
 
-const char* mqtt_server = "broker.hivemq.com";
+// const char* mqtt_server = "broker.hivemq.com";
+const char* mqtt_server = "broker.emqx.io";
 const int mqtt_port = 1883;
 char topics[NUM_TOPIC_SUB][32] = {
   "vending/VM001/cmd",
