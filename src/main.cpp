@@ -77,6 +77,11 @@ const int stopDelay = 1000;
 unsigned long lastDetectTime = 0;
 const int detectCooldown = 500;
 
+unsigned long pushTimer = 0;
+const int pushDelay = 100;
+
+bool state_global_delay = false;
+
 // extern ShiftStepper steppers[NUM_MOTORS];
 std::vector<ShiftStepper> steppers;
 bool motorsConfigured = false;
@@ -272,6 +277,12 @@ void processConveyorEnd() {
     // bool detect2 = (d2 < 6.3f);
     // bool detect3 = (d3 < 6.3f);
 
+    // setelah detect nunggu threshold dorong
+    if((detect1 || detect2 || detect3) && !state_global_delay){
+      if(millis() - pushTimer < pushDelay) return;
+      state_global_delay = true;
+    }
+
     if (millis() - lastDetectTime < detectCooldown) return;
 
     if (detect1 && ct.gate == 1) {
@@ -292,6 +303,9 @@ void processConveyorEnd() {
         openGate(3);
         conveyorQueue.pop();
     }
+
+    pushTimer = millis();
+    state_global_delay = false;
 }
 
 float readUltrasonic(int trig, int echo) {
