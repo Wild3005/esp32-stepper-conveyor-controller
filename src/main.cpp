@@ -51,6 +51,8 @@ size_t SHIFT595_COUNT = 2;
 //| =================== GLOBAL VARIABLE ===================
 std::vector<uint8_t> shiftBuffer;
 
+const float min_detect_ultrasonic = 2.6f;
+const float max_detect_ultrasonic = 9.0f;
 
 //delay untuk pergatian item yang jauh
 bool waitingDelay = false;
@@ -69,7 +71,7 @@ unsigned long gateOpenTime[NUM_GATES] = {0};
 const int gateDuration = 2000;
 
 unsigned long lastUltrasonicRead = 0;
-const int ultrasonicInterval = 50; // ms (atur 20–100)
+const int ultrasonicInterval = 30; // ms (atur 20–100)
 
 unsigned long lastQueueEmptyTime = 0;
 const int stopDelay = 1000;
@@ -80,7 +82,7 @@ const int detectCooldown = 500;
 unsigned long pushTimer = 0;
 const int pushDelay = 100;
 
-bool state_global_delay = false;
+static bool state_global_delay = false;
 
 // extern ShiftStepper steppers[NUM_MOTORS];
 std::vector<ShiftStepper> steppers;
@@ -247,15 +249,15 @@ void processConveyorEnd() {
     float d2 = readUltrasonic(TRIG2, ECHO2);
     float d3 = readUltrasonic(TRIG3, ECHO3);
 
-    if(d1 > 4){
+    if(d1 > max_detect_ultrasonic){
       d1 = 0;
     }
 
-    if(d2 > 4){
+    if(d2 > max_detect_ultrasonic){
       d2 = 0;
     }
 
-    if(d3 > 4){
+    if(d3 > max_detect_ultrasonic){
       d3 = 0;
     }
 
@@ -269,9 +271,9 @@ void processConveyorEnd() {
 
     ConveyorTask ct = conveyorQueue.front();
 
-    bool detect1 = (d1 > 2 && d1 < 4);
-    bool detect2 = (d2 > 2 && d2 < 4);
-    bool detect3 = (d3 > 2 && d3 < 4);
+    bool detect1 = (d1 > min_detect_ultrasonic && d1 < max_detect_ultrasonic);
+    bool detect2 = (d2 > min_detect_ultrasonic && d2 < max_detect_ultrasonic);
+    bool detect3 = (d3 > min_detect_ultrasonic && d3 < max_detect_ultrasonic);
 
     // bool detect1 = (d1 < 6.3f);
     // bool detect2 = (d2 < 6.3f);
