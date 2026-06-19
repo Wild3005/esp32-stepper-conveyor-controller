@@ -10,34 +10,47 @@
 #include "ShiftStepper.hpp"
 
 // =================== global variable before config ===================
+
 static std::vector<int> list_avaliable = {};
 
 // =================== CONFIG ===================
 size_t NUM_MOTORS = 0;
+
 #define NUM_GATES 3
+
 #define NUM_TOPIC_SUB 4
 #define NUM_TOPIC_PUB 2
 
+// Jumlah IC 74HC595 yang diseri (mis. tambah 2 IC dari 1 IC awal => total 3)
+// Setiap IC bisa handle 2 motors (8 bits / 4 bits per motor)
+// Gunakan (NUM_MOTORS + 1) / 2, tapi minimum 2 bytes untuk safety
 size_t SHIFT595_COUNT = 2;
+// #define SHIFT595_BITS (SHIFT595_COUNT * 8)
 
 #define LED_BLUE_PIN 2
+
 #define DATA_PIN 4
 #define CLOCK_PIN 18
 #define LATCH_PIN 5
+
 #define CONVEYOR_PIN 14
 
 #define TRIG1 21
 #define ECHO1 22
+
 #define TRIG2 32
 #define ECHO2 33
+
 #define TRIG3 26
 #define ECHO3 27
 
 // ================= STEPPER CONFIG =================
-#define STEPS_PER_MOVE 2048
+// #define STEPS_PER_MOVE 4096   // sesuaikan (1/2 putaran biasanya)
+#define STEPS_PER_MOVE 2048 // sesuaikan (1/2 putaran biasanya)
 
 //| =================== GLOBAL VARIABLE ===================
 std::vector<uint8_t> shiftBuffer;
+
 const float min_detect_ultrasonic = 2.6f;
 const float max_detect_ultrasonic = 9.0f;
 
@@ -58,7 +71,7 @@ unsigned long gateOpenTime[NUM_GATES] = {0};
 const int gateDuration = 2000;
 
 unsigned long lastUltrasonicRead = 0;
-const int ultrasonicInterval = 30;
+const int ultrasonicInterval = 30; // ms (atur 20–100)
 
 unsigned long lastQueueEmptyTime = 0;
 const int stopDelay = 1000;
@@ -71,6 +84,7 @@ const int pushDelay = 100;
 
 static bool state_global_delay = false;
 
+// extern ShiftStepper steppers[NUM_MOTORS];
 std::vector<ShiftStepper> steppers;
 bool motorsConfigured = false;
 
@@ -94,42 +108,41 @@ void processConveyorEnd();
 void setupMotors();
 void syncMotorResources();
 void shiftOut595(uint8_t *data, size_t size);
-void updateGates();
 
 std::queue<Task> taskQueue;
 std::vector<Task> task;
 std::queue<ConveyorTask> conveyorQueue;
 bool motorBusy = false;
 Task currentTask;
+
 bool motorStarted = false;
 
 // ================= WIFI & MQTT =================
 unsigned long lastReconnectAttempt = 0;
+
 const char *ssid = "Wild";
 const char *password = "12345678";
+
+// const char* ssid = "Ppppp";
+// const char* password = "12345654";
+
+// const char* mqtt_server = "broker.hivemq.com";
 const char *mqtt_server = "broker.emqx.io";
 const int mqtt_port = 1883;
-
 char topics[NUM_TOPIC_SUB][32] = {
     "vending/VM001/cmd",
     "vending/VM002/cmd",
     "vending/VM003/cmd",
+
     "vending/config"};
 
 char pubTopics[NUM_TOPIC_PUB][32] = {
-    "vending/stock",
+    "vending/stock", // decrement jika ada barang berkirang / index berkurang
     "vending/request_config",
 };
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-
-// Mutex untuk mengamankan data bersama saat diakses antar-task
-SemaphoreHandle_t xMutex;
-
-// =================== FREE RTOS TASK HANDLES ===================
-void vTaskNetwork(void *pvParameters);
-void vTaskLogicAndHardware(void *pvParameters);
 
 //| =================== FUNCTION ===================
 
@@ -146,15 +159,16 @@ std::string parsePubJSON(const T &key, const U &value)
 {
   StaticJsonDocument<200> doc;
   doc[key] = value;
+
   std::string output;
   serializeJson(doc, output);
   return output;
 }
-
 std::string parsePubJSON(int item)
-{
+{ // parse int to string and json format
   StaticJsonDocument<200> doc;
   doc["item"] = item;
+
   std::string output;
   serializeJson(doc, output);
   return output;
@@ -162,6 +176,8 @@ std::string parsePubJSON(int item)
 
 void syncMotorResources()
 {
+  //| lihat dahulu data yang dikirim
+  // NUM_MOTORS = list_avaliable.size();
   if (list_avaliable.empty())
   {
     NUM_MOTORS = 0;
@@ -191,18 +207,26 @@ void syncMotorResources()
 int resolveMotorIndex(int item)
 {
   if (item < 1)
+  {
     return -1;
+  }
 
   if (!list_avaliable.empty())
   {
     auto it = std::find(list_avaliable.begin(), list_avaliable.end(), item);
     if (it == list_avaliable.end())
+    {
       return -1;
+    }
+
     return static_cast<int>(std::distance(list_avaliable.begin(), it));
   }
 
   if (static_cast<size_t>(item) > NUM_MOTORS)
+  {
     return -1;
+  }
+
   return item - 1;
 }
 
@@ -237,6 +261,7 @@ void updateGates()
 void openGate(int gate)
 {
   int idx = gate - 1;
+
   if (idx < 0 || idx >= NUM_GATES)
     return;
   if (!gateAttached[idx])
@@ -252,8 +277,10 @@ void openGate(int gate)
 
 void processConveyorEnd()
 {
+  // Serial.println("conveyor queue: " + String(conveyorQueue.size()));
   if (conveyorQueue.empty())
     return;
+
   if (millis() - lastUltrasonicRead < ultrasonicInterval)
     return;
   lastUltrasonicRead = millis();
@@ -263,11 +290,19 @@ void processConveyorEnd()
   float d3 = readUltrasonic(TRIG3, ECHO3);
 
   if (d1 > max_detect_ultrasonic)
+  {
     d1 = 0;
+  }
+
   if (d2 > max_detect_ultrasonic)
+  {
     d2 = 0;
+  }
+
   if (d3 > max_detect_ultrasonic)
+  {
     d3 = 0;
+  }
 
   Serial.print("Ultrasonic1: ");
   Serial.println(d1);
@@ -283,6 +318,11 @@ void processConveyorEnd()
   bool detect2 = (d2 > min_detect_ultrasonic && d2 < max_detect_ultrasonic);
   bool detect3 = (d3 > min_detect_ultrasonic && d3 < max_detect_ultrasonic);
 
+  // bool detect1 = (d1 < 6.3f);
+  // bool detect2 = (d2 < 6.3f);
+  // bool detect3 = (d3 < 6.3f);
+
+  // setelah detect nunggu threshold dorong
   if ((detect1 || detect2 || detect3) && !state_global_delay)
   {
     if (millis() - pushTimer < pushDelay)
@@ -329,6 +369,7 @@ float readUltrasonic(int trig, int echo)
 
   float duration = pulseIn(echo, HIGH, 10000);
   float distance = duration * 0.034f / 2.0f;
+
   return distance;
 }
 
@@ -370,6 +411,7 @@ bool controlMotor(int item)
     {
       memset(ShiftStepper::_buffer, 0, SHIFT595_COUNT);
     }
+
     steppers[index].setCurrentPosition(0);
     steppers[index].move(STEPS_PER_MOVE);
   }
@@ -384,6 +426,15 @@ void processQueue()
 {
   if (!motorsConfigured)
     return;
+
+  // if (!motorBusy && !taskQueue.empty()) {
+  //     currentTask = taskQueue.front();
+  //     taskQueue.pop();
+
+  //     controlMotor(currentTask.item);
+  //     motorBusy = true;
+  //     motorStarted = false; // reset
+  // }
 
   bool is_sorted = std::is_sorted(task.begin(), task.end(), [](const Task &a, const Task &b)
                                   { return a.item > b.item; });
@@ -400,24 +451,30 @@ void processQueue()
     currentTask = task.front();
     task.erase(task.begin());
 
+    //| PUBLISH
     std::string payload = parsePubJSON(currentTask.item);
     bool ok = client.publish(pubTopics[0], payload.c_str());
 
     if (ok)
+    {
       Serial.println("Publish success");
+    }
     else
+    {
       Serial.println("Publish failed");
+    }
 
     if (controlMotor(currentTask.item))
     {
       motorBusy = true;
-      motorStarted = false;
+      motorStarted = false; // reset
     }
   }
 
   if (motorBusy)
   {
     int idx = resolveMotorIndex(currentTask.item);
+
     if (idx < 0)
     {
       Serial.print("Skipping inactive motor item: ");
@@ -437,11 +494,14 @@ void processQueue()
           int diff = abs(current_index - prev_index);
           if (!(diff < 3))
           {
+            // todo delay (0.1 * diff) detik
             if (!waitingDelay)
             {
               delayDuration = 100 * diff;
               delayStart = millis();
+
               waitingDelay = true;
+
               Serial.print("Start delay: ");
               Serial.println(delayDuration);
             }
@@ -453,11 +513,14 @@ void processQueue()
           int diff = abs(current_index - prev_index);
           if (!(diff < 4))
           {
+            // todo delay (0.1 * diff) detik
             if (!waitingDelay)
             {
               delayDuration = 100 * diff;
               delayStart = millis();
+
               waitingDelay = true;
+
               Serial.print("Start delay: ");
               Serial.println(delayDuration);
             }
@@ -475,25 +538,31 @@ void processQueue()
       }
       else
       {
+        // menunggu delay
         return;
       }
     }
 
     if (idx >= 0 && static_cast<size_t>(idx) < NUM_MOTORS)
     {
+
+      // tunggu sampai benar-benar mulai bergerak
       if (!motorStarted && steppers[idx].distanceToGo() != 0)
       {
         motorStarted = true;
       }
 
+      // baru boleh selesai
       if (motorStarted && steppers[idx].distanceToGo() == 0)
       {
         ConveyorTask ct;
         ct.gate = currentTask.gate;
+
         conveyorQueue.push(ct);
 
         motorBusy = false;
         Serial.println("Task selesai");
+
         prev_index = current_index;
       }
     }
@@ -503,10 +572,12 @@ void processQueue()
 void shiftOut595(uint8_t *data, size_t size)
 {
   digitalWrite(LATCH_PIN, LOW);
+
   for (int i = (int)size - 1; i >= 0; i--)
   {
     shiftOut(DATA_PIN, CLOCK_PIN, MSBFIRST, data[i]);
   }
+
   digitalWrite(LATCH_PIN, HIGH);
 }
 
@@ -515,30 +586,39 @@ static const char *mqttStateToStr(int state)
   switch (state)
   {
   case MQTT_CONNECTION_TIMEOUT:
-    return "MQTT_CONNECTION_TIMEOUT";
+    return "MQTT_CONNECTION_TIMEOUT"; // -4
   case MQTT_CONNECTION_LOST:
-    return "MQTT_CONNECTION_LOST";
+    return "MQTT_CONNECTION_LOST"; // -3
   case MQTT_CONNECT_FAILED:
-    return "MQTT_CONNECT_FAILED";
+    return "MQTT_CONNECT_FAILED"; // -2
   case MQTT_DISCONNECTED:
-    return "MQTT_DISCONNECTED";
+    return "MQTT_DISCONNECTED"; // -1
   case MQTT_CONNECTED:
-    return "MQTT_CONNECTED";
+    return "MQTT_CONNECTED"; // 0
   case MQTT_CONNECT_BAD_PROTOCOL:
-    return "MQTT_CONNECT_BAD_PROTOCOL";
+    return "MQTT_CONNECT_BAD_PROTOCOL"; // 1
   case MQTT_CONNECT_BAD_CLIENT_ID:
-    return "MQTT_CONNECT_BAD_CLIENT_ID";
+    return "MQTT_CONNECT_BAD_CLIENT_ID"; // 2
   case MQTT_CONNECT_UNAVAILABLE:
-    return "MQTT_CONNECT_UNAVAILABLE";
+    return "MQTT_CONNECT_UNAVAILABLE"; // 3
   case MQTT_CONNECT_BAD_CREDENTIALS:
-    return "MQTT_CONNECT_BAD_CREDENTIALS";
+    return "MQTT_CONNECT_BAD_CREDENTIALS"; // 4
   case MQTT_CONNECT_UNAUTHORIZED:
-    return "MQTT_CONNECT_UNAUTHORIZED";
+    return "MQTT_CONNECT_UNAUTHORIZED"; // 5
   default:
     return "MQTT_UNKNOWN";
   }
 }
 
+// ShiftStepper steppers[NUM_MOTORS] = {
+//   ShiftStepper(0, shiftOut595), // Q0–Q3
+//   ShiftStepper(1, shiftOut595),  // Q4–Q7
+//   ShiftStepper(2, shiftOut595),  // Q8–Q11
+//   ShiftStepper(3, shiftOut595),  // Q12–Q15
+//   ShiftStepper(4, shiftOut595)   // Q16–Q19
+// };
+
+// ================= MOTOR CONTROL =================
 void setupMotors()
 {
   syncMotorResources();
@@ -550,9 +630,11 @@ void runMotors()
     return;
 
   bool anyRunning = false;
+
   for (size_t i = 0; i < NUM_MOTORS; i++)
   {
     steppers[i].run();
+
     if (steppers[i].distanceToGo() != 0)
     {
       anyRunning = true;
@@ -570,15 +652,51 @@ void runMotors()
 }
 
 // ================= MQTT CALLBACK =================
+// void callback(char* topic, byte* payload, unsigned int length) {
+//   Serial.print("Message arrived [");
+//   Serial.print(topic);
+//   Serial.print("] ");
+
+//   String message;
+//   for (int i = 0; i < length; i++) {
+//     message += (char)payload[i];
+//   }
+
+//   Serial.println(message);
+
+//   StaticJsonDocument<512> doc;
+//   DeserializationError error = deserializeJson(doc, message);
+
+//   if (error) {
+//     Serial.print("JSON Error: ");
+//     Serial.println(error.c_str());
+//     return;
+//   }
+
+//   JsonArray items = doc["items"];
+
+//   for (int item : items) {
+//     controlMotor(item);
+//   }
+// }
+
 void callback(char *topic, byte *payload, unsigned int length)
 {
+
   int gate;
+
   if (strcmp(topic, "vending/VM001/cmd") == 0)
+  {
     gate = 1;
+  }
   else if (strcmp(topic, "vending/VM002/cmd") == 0)
+  {
     gate = 2;
+  }
   else if (strcmp(topic, "vending/VM003/cmd") == 0)
+  {
     gate = 3;
+  }
   else if (strcmp(topic, "vending/config") == 0)
   {
     Serial.println("Received config update");
@@ -591,43 +709,40 @@ void callback(char *topic, byte *payload, unsigned int length)
       return;
     }
 
-    // Amankan resource bersama dengan Take Mutex saat modifikasi konfigurasi global
-    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
+    // info untuk update list_avaliable
+    JsonArray items_info = doc_info["active_indexes"];
+    list_avaliable.clear();
+    for (int item : items_info)
     {
-      JsonArray items_info = doc_info["active_indexes"];
-      list_avaliable.clear();
-      for (int item : items_info)
-      {
-        list_avaliable.push_back(item);
-      }
-
-      Serial.print("Updated available list: ");
-      for (int idx : list_avaliable)
-      {
-        Serial.print(idx);
-        Serial.print(" ");
-      }
-      Serial.println();
-
-      if (!list_avaliable.empty())
-        ledBlueOn(true);
-      else
-        ledBlueOn(false);
-
-      task.clear();
-      while (!conveyorQueue.empty())
-      {
-        conveyorQueue.pop();
-      }
-      motorBusy = false;
-      motorStarted = false;
-      waitingDelay = false;
-      current_index = -1;
-      prev_index = -1;
-
-      syncMotorResources();
-      xSemaphoreGive(xMutex);
+      list_avaliable.push_back(item);
     }
+
+    Serial.print("Updated available list: ");
+    for (int idx : list_avaliable)
+    {
+      Serial.print(idx);
+      Serial.print(" ");
+    }
+    Serial.println();
+
+    if (!list_avaliable.empty())
+      ledBlueOn(true);
+    else
+      ledBlueOn(false);
+
+    task.clear();
+    while (!conveyorQueue.empty())
+    {
+      conveyorQueue.pop();
+    }
+    motorBusy = false;
+    motorStarted = false;
+    waitingDelay = false;
+    current_index = -1;
+    prev_index = -1;
+
+    syncMotorResources();
+
     return;
   }
   else
@@ -648,23 +763,21 @@ void callback(char *topic, byte *payload, unsigned int length)
   if (!doc.containsKey("items"))
     return;
 
-  if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
+  for (int item : items)
   {
-    for (int item : items)
+    if (resolveMotorIndex(item) < 0)
     {
-      if (resolveMotorIndex(item) < 0)
-      {
-        Serial.print("Ignored invalid item: ");
-        Serial.println(item);
-        continue;
-      }
-
-      Task t;
-      t.item = item;
-      t.gate = gate;
-      task.push_back(t);
+      Serial.print("Ignored invalid item: ");
+      Serial.println(item);
+      continue;
     }
-    xSemaphoreGive(xMutex);
+
+    Task t;
+    t.item = item;
+    t.gate = gate;
+
+    // taskQueue.push(t);
+    task.push_back(t);
   }
 }
 
@@ -673,17 +786,24 @@ void setupWIFI()
 {
   delay(10);
   Serial.println("Connecting to WiFi");
+
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
+
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED)
   {
-    vTaskDelay(pdMS_TO_TICKS(500)); // Menggunakan delay RTOS saat inisialisasi awal
+    delay(500);
     Serial.print(".");
   }
 
-  Serial.println("\nWiFi connected");
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  Serial.print("RSSI: ");
+  Serial.println(WiFi.RSSI());
 }
 
 // ================= MQTT RECONNECT =================
@@ -691,10 +811,26 @@ void reconnect()
 {
   if (client.connected())
     return;
+
   if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("WiFi not connected, skip MQTT connect");
     return;
+  }
+
+  IPAddress brokerIp;
+  if (WiFi.hostByName(mqtt_server, brokerIp))
+  {
+    Serial.print("MQTT broker IP: ");
+    Serial.println(brokerIp);
+  }
+  else
+  {
+    Serial.println("DNS lookup failed for MQTT broker");
+  }
 
   Serial.print("Connecting to MQTT...");
+
   String clientId = "ESP32-" + String(random(0xffff), HEX);
 
   if (client.connect(clientId.c_str()))
@@ -703,35 +839,62 @@ void reconnect()
     for (char *topic : topics)
     {
       client.subscribe(topic);
+      Serial.println("Subscribed to topic: " + String(topic));
     }
+  }
+  else
+  {
+    int st = client.state();
+    Serial.print("failed, rc=");
+    Serial.print(st);
+    Serial.print(" (");
+    Serial.print(mqttStateToStr(st));
+    Serial.println(")");
   }
 }
 
 void setup_req()
 {
+
   std::string payload = parsePubJSON("msg", "REQUEST_DATA_BARANG");
-  client.publish(pubTopics[1], payload.c_str());
+  bool ok = client.publish(pubTopics[1], payload.c_str());
+
+  if (ok)
+  {
+    Serial.println("Publish setup success");
+  }
+  else
+  {
+    Serial.println("Publish setup failed");
+  }
 }
 
 // ================= SETUP =================
 void setup()
 {
   Serial.begin(115200);
+
   setupGates();
 
   pinMode(LED_BLUE_PIN, OUTPUT);
+
   pinMode(DATA_PIN, OUTPUT);
   pinMode(CLOCK_PIN, OUTPUT);
   pinMode(LATCH_PIN, OUTPUT);
+
   pinMode(CONVEYOR_PIN, OUTPUT);
+
   pinMode(TRIG1, OUTPUT);
   pinMode(ECHO1, INPUT);
+
   pinMode(TRIG2, OUTPUT);
   pinMode(ECHO2, INPUT);
+
   pinMode(TRIG3, OUTPUT);
   pinMode(ECHO3, INPUT);
 
   randomSeed(micros());
+
   setupWIFI();
 
   client.setServer(mqtt_server, mqtt_port);
@@ -740,60 +903,37 @@ void setup()
   client.setSocketTimeout(5);
 
   delay(1000);
-  reconnect();
-  setup_req();
-  setupMotors();
+  reconnect(); // CONNECT MQTT
 
-  // Buat Mutex Semaphore
-  xMutex = xSemaphoreCreateMutex();
+  setup_req(); // REQUEST CONFIG
 
-  // Pemisahan Task RTOS Multi-core ESP32
-  // Core 0 khusus menangani jaringan (MQTT), Core 1 khusus menangani pembacaan sensor dan pergerakan mekanik keras.
-  xTaskCreatePinnedToCore(vTaskNetwork, "TaskNetwork", 4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(vTaskLogicAndHardware, "TaskHardware", 4096, NULL, 2, NULL, 1);
+  setupMotors(); // BARU MOTOR
 }
-
-// ================= LOOP (KOSONG) =================
+// ================= LOOP =================
 void loop()
 {
-  // Kosong, semua sudah diambil alih oleh FreeRTOS Scheduler
-}
-
-// ================= FREE RTOS TASKS DEFINITIONS =================
-
-void vTaskNetwork(void *pvParameters)
-{
-  for (;;)
+  if (!client.connected())
   {
-    if (!client.connected())
+    if (millis() - lastReconnectAttempt > 5000)
     {
-      if (millis() - lastReconnectAttempt > 5000)
-      {
-        lastReconnectAttempt = millis();
-        reconnect();
-      }
+      lastReconnectAttempt = millis();
+      reconnect();
     }
-    else
-    {
-      client.loop();
-    }
-    vTaskDelay(pdMS_TO_TICKS(10)); // Jeda 10ms agar core 0 tidak watchdog reset
   }
-}
-
-void vTaskLogicAndHardware(void *pvParameters)
-{
-  for (;;)
+  else
   {
-    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
-    {
-      runMotors();
-      processQueue();
-      updateGates();
-      controlConveyor();
-      processConveyorEnd();
-      xSemaphoreGive(xMutex);
-    }
-    vTaskDelay(pdMS_TO_TICKS(2)); // Tick rate cepat (2ms) untuk kehalusan runMotors() berkelanjutan
+    client.loop();
   }
+
+  runMotors();
+  processQueue();
+
+  updateGates();
+
+  controlConveyor();
+  // int temp = readUltrasonic(TRIG2, ECHO2); // baca dulu untuk update state
+  // Serial.print("ini di loop: ");
+  // Serial.println(temp);
+
+  processConveyorEnd();
 }
