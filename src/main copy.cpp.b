@@ -1,3 +1,5 @@
+//BACKUP
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
@@ -39,7 +41,7 @@ size_t SHIFT595_COUNT = 2;
 //| =================== GLOBAL VARIABLE ===================
 std::vector<uint8_t> shiftBuffer;
 const float min_detect_ultrasonic = 3.0f;
-const float max_detect_ultrasonic = 9.0f;
+const float max_detect_ultrasonic = 10.0f;
 
 // delay untuk pergatian item yang jauh
 bool waitingDelay = false;
@@ -66,33 +68,10 @@ const int stopDelay = 1000;
 unsigned long lastDetectTime = 0;
 const int detectCooldown = 1500;
 
-bool gate3DelayActive = false;
-unsigned long gate3DelayStart = 0;
-const unsigned long gate3ExtraDelay = 1000; // ms
-
 unsigned long pushTimer = 0;
-const int pushDelay = 200;
-uint8_t buffer_ultrasonic = 0;
-const uint8_t threshold_buffer_ultrasonic = 7;
+const int pushDelay = 100;
 
 static bool state_global_delay = false;
-
-volatile bool ultrasonicTaskEnable = false;
-volatile bool servoTaskEnable = false;
-volatile bool itemDetected = false;
-unsigned long detectStartTime = 0;
-
-volatile bool detectSensor[NUM_GATES] =
-    {
-        false,
-        false,
-        false};
-
-volatile float ultrasonicDistance[NUM_GATES] =
-    {
-        0,
-        0,
-        0};
 
 std::vector<ShiftStepper> steppers;
 bool motorsConfigured = false;
@@ -149,13 +128,10 @@ PubSubClient client(espClient);
 
 // Mutex untuk mengamankan data bersama saat diakses antar-task
 SemaphoreHandle_t xMutex;
-SemaphoreHandle_t conveyorMutex;
 
 // =================== FREE RTOS TASK HANDLES ===================
 void vTaskNetwork(void *pvParameters);
 void vTaskLogicAndHardware(void *pvParameters);
-void vTaskUltrasonic(void *pvParameters);
-void vTaskServo(void *pvParameters);
 
 //| =================== FUNCTION ===================
 
@@ -362,39 +338,6 @@ float readUltrasonic(int trig, int echo)
   return distance;
 }
 
-// void controlConveyor()
-// {
-//   bool anyGateOpen = false;
-
-//   for (int i = 0; i < NUM_GATES; i++)
-//   {
-//     if (gateOpened[i])
-//     {
-//       anyGateOpen = true;
-//       break;
-//     }
-//   }
-
-//   if (anyGateOpen)
-//   {
-//     digitalWrite(CONVEYOR_PIN, LOW);
-//     return;
-//   }
-
-//   if (!conveyorQueue.empty())
-//   {
-//     digitalWrite(CONVEYOR_PIN, HIGH);
-//     lastQueueEmptyTime = millis();
-//   }
-//   else
-//   {
-//     if (millis() - lastQueueEmptyTime > stopDelay)
-//     {
-//       digitalWrite(CONVEYOR_PIN, LOW);
-//     }
-//   }
-// }
-
 void controlConveyor()
 {
   bool anyGateOpen = false;
@@ -414,19 +357,7 @@ void controlConveyor()
     return;
   }
 
-  bool queueNotEmpty = false;
-
-  // xSemaphoreTake(conveyorMutex, portMAX_DELAY);
-  // queueNotEmpty = !conveyorQueue.empty();
-  // xSemaphoreGive(conveyorMutex);
-
-  if (xSemaphoreTake(conveyorMutex, portMAX_DELAY) == pdTRUE)
-  {
-    queueNotEmpty = !conveyorQueue.empty();
-    xSemaphoreGive(conveyorMutex);
-  }
-
-  if (queueNotEmpty)
+  if (!conveyorQueue.empty())
   {
     digitalWrite(CONVEYOR_PIN, HIGH);
     lastQueueEmptyTime = millis();
@@ -578,42 +509,11 @@ void processQueue()
         motorStarted = true;
       }
 
-      // if (motorStarted && steppers[idx].distanceToGo() == 0)
-      // {
-      //   ConveyorTask ct;
-      //   ct.gate = currentTask.gate;
-      //   conveyorQueue.push(ct);
-
-      //   motorBusy = false;
-      //   Serial.println("Task selesai");
-      //   prev_index = current_index;
-      // }
-
       if (motorStarted && steppers[idx].distanceToGo() == 0)
       {
-        // xSemaphoreTake(conveyorMutex, portMAX_DELAY);
-
-        // ConveyorTask ct;
-        // ct.gate = currentTask.gate;
-        // conveyorQueue.push(ct);
-
-        // ultrasonicTaskEnable = true;
-        // servoTaskEnable = true;
-
-        // xSemaphoreGive(conveyorMutex);
-
-        if (xSemaphoreTake(conveyorMutex, portMAX_DELAY) == pdTRUE)
-        {
-          ConveyorTask ct;
-          ct.gate = currentTask.gate;
-
-          conveyorQueue.push(ct);
-
-          ultrasonicTaskEnable = true;
-          servoTaskEnable = true;
-
-          xSemaphoreGive(conveyorMutex);
-        }
+        ConveyorTask ct;
+        ct.gate = currentTask.gate;
+        conveyorQueue.push(ct);
 
         motorBusy = false;
         Serial.println("Task selesai");
@@ -897,23 +797,10 @@ void callback(char *topic, byte *payload, unsigned int length)
         ledBlueOn(false);
 
       task.clear();
-      // while (!conveyorQueue.empty())
-      // {
-      //   conveyorQueue.pop();
-      // }
-
-      xSemaphoreTake(conveyorMutex, portMAX_DELAY);
-
       while (!conveyorQueue.empty())
       {
         conveyorQueue.pop();
       }
-
-      ultrasonicTaskEnable = false;
-      servoTaskEnable = false;
-
-      xSemaphoreGive(conveyorMutex);
-
       motorBusy = false;
       motorStarted = false;
       waitingDelay = false;
@@ -1036,21 +923,16 @@ void setup()
 
   delay(1000);
   reconnect();
-
-  xMutex = xSemaphoreCreateMutex();
-  conveyorMutex = xSemaphoreCreateMutex();
-
   setup_req();
   setupMotors();
 
   // Buat Mutex Semaphore
+  xMutex = xSemaphoreCreateMutex();
 
   // Pemisahan Task RTOS Multi-core ESP32
   // Core 0 khusus menangani jaringan (MQTT), Core 1 khusus menangani pembacaan sensor dan pergerakan mekanik keras.
   xTaskCreatePinnedToCore(vTaskNetwork, "TaskNetwork", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(vTaskLogicAndHardware, "TaskHardware", 4096, NULL, 2, NULL, 1);
-  xTaskCreatePinnedToCore(vTaskUltrasonic, "Ultrasonic", 4096, NULL, 2, NULL, 0);
-  xTaskCreatePinnedToCore(vTaskServo, "Servo", 4096, NULL, 2, NULL, 0);
 }
 
 // ================= LOOP (KOSONG) =================
@@ -1087,225 +969,13 @@ void vTaskLogicAndHardware(void *pvParameters)
   {
     if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE)
     {
-      // runMotors();
-      // processQueue();
-      // updateGates();
-      // controlConveyor();
-      // processConveyorEnd();
-
       runMotors();
       processQueue();
       updateGates();
       controlConveyor();
-
+      processConveyorEnd();
       xSemaphoreGive(xMutex);
     }
     vTaskDelay(pdMS_TO_TICKS(2)); // Tick rate cepat (2ms) untuk kehalusan runMotors() berkelanjutan
-  }
-}
-
-void vTaskUltrasonic(void *pvParameters)
-{
-  for (;;)
-  {
-    if (!ultrasonicTaskEnable)
-    {
-      vTaskDelay(pdMS_TO_TICKS(20));
-      continue;
-    }
-
-    ultrasonicDistance[0] =
-        readUltrasonic(TRIG1, ECHO1);
-
-    ultrasonicDistance[1] =
-        readUltrasonic(TRIG2, ECHO2);
-
-    ultrasonicDistance[2] =
-        readUltrasonic(TRIG3, ECHO3);
-
-    for (int i = 0; i < 3; i++)
-    {
-      if (ultrasonicDistance[i] >= max_detect_ultrasonic)
-      {
-        ultrasonicDistance[i] = 0;
-      }
-    }
-
-    Serial.print("Ultrasonic1: ");
-    Serial.println(ultrasonicDistance[0]);
-    Serial.print("Ultrasonic2: ");
-    Serial.println(ultrasonicDistance[1]);
-    Serial.print("Ultrasonic3: ");
-    Serial.println(ultrasonicDistance[2]);
-    Serial.print("==============================\n");
-
-    detectSensor[0] =
-        ultrasonicDistance[0] > min_detect_ultrasonic &&
-        ultrasonicDistance[0] < max_detect_ultrasonic;
-
-    detectSensor[1] =
-        ultrasonicDistance[1] > min_detect_ultrasonic &&
-        ultrasonicDistance[1] < max_detect_ultrasonic;
-
-    detectSensor[2] =
-        ultrasonicDistance[2] > min_detect_ultrasonic &&
-        ultrasonicDistance[2] < max_detect_ultrasonic;
-
-    // if ((detectSensor[0] || detectSensor[1] || detectSensor[2]) &&
-    //     !itemDetected)
-    // {
-    //   itemDetected = true;
-    //   detectStartTime = millis();
-    // }
-    bool detected =
-        detectSensor[0] ||
-        detectSensor[1] ||
-        detectSensor[2];
-
-    if (detected)
-    {
-      if (!itemDetected)
-      {
-        if (buffer_ultrasonic < threshold_buffer_ultrasonic)
-        {
-          buffer_ultrasonic++;
-        }
-
-        if (buffer_ultrasonic >= threshold_buffer_ultrasonic)
-        {
-          itemDetected = true;
-          detectStartTime = millis();
-        }
-      }
-    }
-    else
-    {
-      buffer_ultrasonic = 0;
-      itemDetected = false;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(15));
-  }
-}
-
-void vTaskServo(void *pvParameters)
-{
-  for (;;)
-  {
-    if (!servoTaskEnable)
-    {
-      vTaskDelay(pdMS_TO_TICKS(20));
-      continue;
-    }
-
-    if (millis() - lastDetectTime < detectCooldown)
-    {
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
-    }
-
-    bool empty = false;
-
-    if (itemDetected)
-    {
-      if (millis() - detectStartTime < pushDelay)
-      {
-        vTaskDelay(pdMS_TO_TICKS(5));
-        continue;
-      }
-    }
-    // xSemaphoreTake(conveyorMutex, portMAX_DELAY);
-    if (xSemaphoreTake(conveyorMutex, portMAX_DELAY) == pdTRUE)
-    {
-
-      if (!conveyorQueue.empty())
-      {
-        ConveyorTask ct = conveyorQueue.front();
-
-        if (detectSensor[0] && ct.gate == 1)
-        {
-          lastDetectTime = millis();
-
-          // digitalWrite(CONVEYOR_PIN, LOW);
-
-          Serial.println("Dorong ke Gate 1");
-
-          openGate(1);
-
-          conveyorQueue.pop();
-
-          itemDetected = false;
-          buffer_ultrasonic = 0;
-
-          detectSensor[0] = false;
-          detectSensor[1] = false;
-          detectSensor[2] = false;
-        }
-        else if (detectSensor[1] && ct.gate == 2)
-        {
-          lastDetectTime = millis();
-
-          digitalWrite(CONVEYOR_PIN, LOW);
-
-          Serial.println("Dorong ke Gate 2");
-
-          openGate(2);
-
-          conveyorQueue.pop();
-
-          itemDetected = false;
-          buffer_ultrasonic = 0;
-
-          detectSensor[0] = false;
-          detectSensor[1] = false;
-          detectSensor[2] = false;
-        }
-        else if (ct.gate == 3)
-        {
-          // pertama kali sensor 3 mendeteksi
-          if (detectSensor[2] && !gate3DelayActive)
-          {
-            gate3DelayActive = true;
-            gate3DelayStart = millis();
-
-            Serial.println("Gate 3 terdeteksi");
-          }
-
-          // setelah terdeteksi tunggu 1 detik
-          if (gate3DelayActive &&
-              millis() - gate3DelayStart >= gate3ExtraDelay)
-          {
-            gate3DelayActive = false;
-
-            lastDetectTime = millis();
-
-            digitalWrite(CONVEYOR_PIN, LOW);
-
-            Serial.println("Dorong ke Gate 3");
-
-            openGate(3);
-
-            conveyorQueue.pop();
-
-            itemDetected = false;
-            buffer_ultrasonic = 0;
-
-            detectSensor[0] = false;
-            detectSensor[1] = false;
-            detectSensor[2] = false;
-          }
-        }
-      }
-      empty = conveyorQueue.empty();
-      xSemaphoreGive(conveyorMutex);
-    }
-
-    if (empty)
-    {
-      ultrasonicTaskEnable = false;
-      servoTaskEnable = false;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
