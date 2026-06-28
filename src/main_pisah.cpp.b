@@ -1,12 +1,11 @@
 #include <Arduino.h>
-#include <ArduinoJson.h>
-#include <PubSubClient.h>
 #include <WiFi.h>
-
-#include <algorithm>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
 #include <queue>
-#include <string>
 #include <vector>
+#include <algorithm>
+#include <string>
 
 #include "ShiftStepper.hpp"
 
@@ -28,11 +27,11 @@ size_t SHIFT595_COUNT = 2;
 #define CONVEYOR_PIN 14
 
 #define TRIG1 21
+#define ECHO1 22
 #define TRIG2 32
+#define ECHO2 33
 #define TRIG3 26
-// #define ECHO1 22
-// #define ECHO2 33
-// #define ECHO3 27
+#define ECHO3 27
 
 // ================= STEPPER CONFIG =================
 #define STEPS_PER_MOVE 2048
@@ -59,7 +58,7 @@ unsigned long gateOpenTime[NUM_GATES] = {0};
 const int gateDuration = 450;
 
 unsigned long lastUltrasonicRead = 0;
-const int ultrasonicInterval = 25;
+const int ultrasonicInterval = 40;
 
 unsigned long lastQueueEmptyTime = 0;
 const int stopDelay = 1000;
@@ -72,9 +71,9 @@ unsigned long gate3DelayStart = 0;
 const unsigned long gate3ExtraDelay = 1000; // ms
 
 unsigned long pushTimer = 0;
-const int pushDelay = 540;
-uint8_t buffer_ultrasonic = 5;
-const int threshold_buffer_ultrasonic = 4;
+const int pushDelay = 200;
+uint8_t buffer_ultrasonic = 0;
+const uint8_t threshold_buffer_ultrasonic = 7;
 
 static bool state_global_delay = false;
 
@@ -129,8 +128,8 @@ bool motorStarted = false;
 
 // ================= WIFI & MQTT =================
 unsigned long lastReconnectAttempt = 0;
-const char *ssid = "realme10";
-const char *password = "paansih7";
+const char *ssid = "Wild";
+const char *password = "12345678";
 const char *mqtt_server = "broker.emqx.io";
 const int mqtt_port = 1883;
 
@@ -157,7 +156,6 @@ void vTaskNetwork(void *pvParameters);
 void vTaskLogicAndHardware(void *pvParameters);
 void vTaskUltrasonic(void *pvParameters);
 void vTaskServo(void *pvParameters);
-void vTaskConveyorServo(void *pvParameters);
 
 //| =================== FUNCTION ===================
 
@@ -278,6 +276,79 @@ void openGate(int gate)
   }
 }
 
+void processConveyorEnd()
+{
+  if (conveyorQueue.empty())
+    return;
+  if (millis() - lastUltrasonicRead < ultrasonicInterval)
+    return;
+  lastUltrasonicRead = millis();
+
+  float d1 = readUltrasonic(TRIG1, ECHO1);
+  float d2 = readUltrasonic(TRIG2, ECHO2);
+  float d3 = readUltrasonic(TRIG3, ECHO3);
+
+  if (d1 > max_detect_ultrasonic)
+    d1 = 0;
+  if (d2 > max_detect_ultrasonic)
+    d2 = 0;
+  if (d3 > max_detect_ultrasonic)
+    d3 = 0;
+
+  Serial.print("Ultrasonic1: ");
+  Serial.println(d1);
+  Serial.print("Ultrasonic2: ");
+  Serial.println(d2);
+  Serial.print("Ultrasonic3: ");
+  Serial.println(d3);
+  Serial.print("==============================\n");
+
+  ConveyorTask ct = conveyorQueue.front();
+
+  bool detect1 = (d1 > min_detect_ultrasonic && d1 < max_detect_ultrasonic);
+  bool detect2 = (d2 > min_detect_ultrasonic && d2 < max_detect_ultrasonic);
+  bool detect3 = (d3 > min_detect_ultrasonic && d3 < max_detect_ultrasonic);
+
+  if ((detect1 || detect2 || detect3) && !state_global_delay)
+  {
+    if (millis() - pushTimer < pushDelay)
+      return;
+    state_global_delay = true;
+  }
+
+  if (millis() - lastDetectTime < detectCooldown)
+    return;
+
+  if (detect1 && ct.gate == 1)
+  {
+    lastDetectTime = millis();
+
+    // comveyor mati
+    digitalWrite(CONVEYOR_PIN, LOW);
+
+    Serial.println("Dorong ke Gate 1");
+    openGate(1);
+    conveyorQueue.pop();
+  }
+  else if (detect2 && ct.gate == 2)
+  {
+    lastDetectTime = millis();
+    Serial.println("Dorong ke Gate 2");
+    openGate(2);
+    conveyorQueue.pop();
+  }
+  else if (detect3 && ct.gate == 3)
+  {
+    lastDetectTime = millis();
+    Serial.println("Dorong ke Gate 3");
+    openGate(3);
+    conveyorQueue.pop();
+  }
+
+  pushTimer = millis();
+  state_global_delay = false;
+}
+
 float readUltrasonic(int trig, int echo)
 {
   digitalWrite(trig, LOW);
@@ -288,9 +359,41 @@ float readUltrasonic(int trig, int echo)
 
   float duration = pulseIn(echo, HIGH, 10000);
   float distance = duration * 0.034f / 2.0f;
-  distance = distance == 0 ? 15.0 : distance; // Jika tidak ada echo, set jarak ke 15 cm (tidak terdeteksi)
   return distance;
 }
+
+// void controlConveyor()
+// {
+//   bool anyGateOpen = false;
+
+//   for (int i = 0; i < NUM_GATES; i++)
+//   {
+//     if (gateOpened[i])
+//     {
+//       anyGateOpen = true;
+//       break;
+//     }
+//   }
+
+//   if (anyGateOpen)
+//   {
+//     digitalWrite(CONVEYOR_PIN, LOW);
+//     return;
+//   }
+
+//   if (!conveyorQueue.empty())
+//   {
+//     digitalWrite(CONVEYOR_PIN, HIGH);
+//     lastQueueEmptyTime = millis();
+//   }
+//   else
+//   {
+//     if (millis() - lastQueueEmptyTime > stopDelay)
+//     {
+//       digitalWrite(CONVEYOR_PIN, LOW);
+//     }
+//   }
+// }
 
 void controlConveyor()
 {
@@ -519,6 +622,165 @@ void processQueue()
     }
   }
 }
+
+// void processQueue()
+// {
+//   if (!motorsConfigured)
+//     return;
+
+//   // 1. Urutkan task jika belum terurut (Urutan dari index besar ke kecil agar barang terjauh keluar duluan)
+//   bool is_sorted = std::is_sorted(task.begin(), task.end(), [](const Task &a, const Task &b)
+//                                   { return a.item > b.item; });
+
+//   if (!is_sorted)
+//   {
+//     Serial.println("Sorting task queue berdasarkan item terbesar...");
+//     std::sort(task.begin(), task.end(), [](const Task &a, const Task &b)
+//               { return a.item > b.item; });
+//   }
+
+//   // 2. Logika Pemicuan Motor Berurutan (Solusi 2 yang dioptimasi)
+//   static unsigned long lastMotorTriggerTime = 0;
+//   static unsigned long dynamicDelay = 0;
+//   static int lastTriggeredItem = -1;
+
+//   // Cek apakah kita sedang dalam masa tunggu delay antar motor
+//   if (motorBusy && (millis() - lastMotorTriggerTime < dynamicDelay))
+//   {
+//     return; // Masih dalam jeda aman, keluar dulu agar runMotors() tetap jalan
+//   }
+
+//   // Jika waktu tunggu selesai, bebaskan status busy untuk mengambil item selanjutnya
+//   if (motorBusy && (millis() - lastMotorTriggerTime >= dynamicDelay))
+//   {
+//     motorBusy = false;
+//   }
+
+//   // Ambil task berikutnya dari vector `task`
+//   if (!motorBusy && !task.empty())
+//   {
+//     currentTask = task.front();
+//     task.erase(task.begin());
+
+//     // Publish data ke MQTT
+//     std::string payload = parsePubJSON(currentTask.item);
+//     client.publish(pubTopics[0], payload.c_str());
+
+//     // Tentukan delay berdasarkan relasi item saat ini dengan item sebelumnya
+//     if (currentTask.item == lastTriggeredItem)
+//     {
+//       // Kasus khusus item kembar [1, 1], tunggu motor selesai berputar penuh (4 detik)
+//       dynamicDelay = 4000;
+//       Serial.println("Item sama terdeteksi! Set delay maksimal (4s).");
+//     }
+//     else
+//     {
+//       // Kasus item berbeda [1, 2, 3], beri jeda aman antar jatuhnya barang (misal 1.5 detik)
+//       dynamicDelay = 1500;
+//       Serial.println("Item berbeda. Set jeda interleaving aman (1.5s).");
+//     }
+
+//     // Jalankan motor secara non-blocking
+//     if (controlMotor(currentTask.item))
+//     {
+//       lastMotorTriggerTime = millis();
+//       lastTriggeredItem = currentTask.item;
+//       motorBusy = true;
+
+//       // Masukkan ke antrean conveyor agar gate di ujung bersiap menerima
+//       ConveyorTask ct;
+//       ct.gate = currentTask.gate;
+//       conveyorQueue.push(ct);
+//     }
+//   }
+// }
+
+// void processQueue()
+// {
+//   if (!motorsConfigured)
+//     return;
+
+//   // 1. Urutkan task (Indeks besar/terjauh keluar duluan)
+//   bool is_sorted = std::is_sorted(task.begin(), task.end(), [](const Task &a, const Task &b)
+//                                   { return a.item > b.item; });
+
+//   if (!is_sorted)
+//   {
+//     Serial.println("Sorting task queue...");
+//     std::sort(task.begin(), task.end(), [](const Task &a, const Task &b)
+//               { return a.item > b.item; });
+//   }
+
+//   static unsigned long lastMotorTriggerTime = 0;
+//   static unsigned long dynamicDelay = 0;
+//   static int lastTriggeredItem = -1;
+//   static int prev_index = -1;
+
+//   // Cek masa tunggu delay dinamis
+//   if (motorBusy && (millis() - lastMotorTriggerTime < dynamicDelay))
+//   {
+//     return;
+//   }
+
+//   if (motorBusy && (millis() - lastMotorTriggerTime >= dynamicDelay))
+//   {
+//     motorBusy = false;
+//   }
+
+//   // 2. Ambil task berikutnya
+//   if (!motorBusy && !task.empty())
+//   {
+//     currentTask = task.front();
+//     task.erase(task.begin());
+
+//     std::string payload = parsePubJSON(currentTask.item);
+//     client.publish(pubTopics[0], payload.c_str());
+
+//     int current_index = resolveMotorIndex(currentTask.item);
+
+//     // ================= LOGIKA DELAY DINAMIS DIKEMBALIKAN & DIOPTIMALKAN =================
+//     if (currentTask.item == lastTriggeredItem)
+//     {
+//       // Kasus item sama [1, 1], tunggu motor selesai berputar penuh (4 detik)
+//       dynamicDelay = 4000;
+//       Serial.println("Item sama! Delay penuh 4 detik.");
+//     }
+//     else if (prev_index != -1 && prev_index > current_index)
+//     {
+//       // Kasus motor berikutnya lebih dekat ke gate.
+//       // Hitung selisih indeks fisik untuk menentukan waktu tunggu konveyor.
+//       int diff = prev_index - current_index;
+
+//       // Rumus dinamis: Base delay aman (misal 1000ms) + (selisih indeks * waktu tempuh per indeks)
+//       // Contoh: jika diff = 4, dan per indeks butuh 300ms, maka delay = 1000 + (4 * 300) = 2200ms
+//       dynamicDelay = 1000 + (diff * 300);
+
+//       Serial.print("Mekanisme Jarak Aktif! Selisih indeks: ");
+//       Serial.print(diff);
+//       Serial.print(" | Set Dynamic Delay: ");
+//       Serial.println(dynamicDelay);
+//     }
+//     else
+//     {
+//       // Default delay jika tidak ada riwayat indeks sebelumnya
+//       dynamicDelay = 2500;
+//     }
+//     // ===================================================================================
+
+//     // Jalankan motor
+//     if (controlMotor(currentTask.item))
+//     {
+//       lastMotorTriggerTime = millis();
+//       lastTriggeredItem = currentTask.item;
+//       prev_index = current_index; // Simpan indeks untuk perhitungan berikutnya
+//       motorBusy = true;
+
+//       ConveyorTask ct;
+//       ct.gate = currentTask.gate;
+//       conveyorQueue.push(ct);
+//     }
+//   }
+// }
 
 void shiftOut595(uint8_t *data, size_t size)
 {
@@ -757,12 +1019,12 @@ void setup()
   pinMode(CLOCK_PIN, OUTPUT);
   pinMode(LATCH_PIN, OUTPUT);
   pinMode(CONVEYOR_PIN, OUTPUT);
-  pinMode(TRIG1, INPUT);
-  pinMode(TRIG2, INPUT);
-  pinMode(TRIG3, INPUT);
-  // pinMode(ECHO1, INPUT);
-  // pinMode(ECHO2, INPUT);
-  // pinMode(ECHO3, INPUT);
+  pinMode(TRIG1, OUTPUT);
+  pinMode(ECHO1, INPUT);
+  pinMode(TRIG2, OUTPUT);
+  pinMode(ECHO2, INPUT);
+  pinMode(TRIG3, OUTPUT);
+  pinMode(ECHO3, INPUT);
 
   randomSeed(micros());
   setupWIFI();
@@ -784,11 +1046,11 @@ void setup()
   // Buat Mutex Semaphore
 
   // Pemisahan Task RTOS Multi-core ESP32
-  xTaskCreatePinnedToCore(vTaskNetwork, "TaskNetwork", 4096, NULL, 1, NULL, 1);
+  // Core 0 khusus menangani jaringan (MQTT), Core 1 khusus menangani pembacaan sensor dan pergerakan mekanik keras.
+  xTaskCreatePinnedToCore(vTaskNetwork, "TaskNetwork", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(vTaskLogicAndHardware, "TaskHardware", 4096, NULL, 2, NULL, 1);
-  // xTaskCreatePinnedToCore(vTaskUltrasonic, "Ultrasonic", 4096, NULL, 0, NULL, 0);
-  // xTaskCreatePinnedToCore(vTaskServo, "Servo", 4096, NULL, 0, NULL, 0);
-  xTaskCreatePinnedToCore(vTaskConveyorServo, "ConveyorServo", 4096, NULL, 0, NULL, 0);
+  xTaskCreatePinnedToCore(vTaskUltrasonic, "Ultrasonic", 4096, NULL, 2, NULL, 0);
+  xTaskCreatePinnedToCore(vTaskServo, "Servo", 4096, NULL, 2, NULL, 0);
 }
 
 // ================= LOOP (KOSONG) =================
@@ -842,75 +1104,208 @@ void vTaskLogicAndHardware(void *pvParameters)
   }
 }
 
-void vTaskConveyorServo(void *pvParameters)
+void vTaskUltrasonic(void *pvParameters)
 {
   for (;;)
   {
+    if (!ultrasonicTaskEnable)
+    {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+
+    ultrasonicDistance[0] =
+        readUltrasonic(TRIG1, ECHO1);
+
+    ultrasonicDistance[1] =
+        readUltrasonic(TRIG2, ECHO2);
+
+    ultrasonicDistance[2] =
+        readUltrasonic(TRIG3, ECHO3);
+
+    for (int i = 0; i < 3; i++)
+    {
+      if (ultrasonicDistance[i] >= max_detect_ultrasonic)
+      {
+        ultrasonicDistance[i] = 0;
+      }
+    }
+
+    Serial.print("Ultrasonic1: ");
+    Serial.println(ultrasonicDistance[0]);
+    Serial.print("Ultrasonic2: ");
+    Serial.println(ultrasonicDistance[1]);
+    Serial.print("Ultrasonic3: ");
+    Serial.println(ultrasonicDistance[2]);
+    Serial.print("==============================\n");
+
+    detectSensor[0] =
+        ultrasonicDistance[0] > min_detect_ultrasonic &&
+        ultrasonicDistance[0] < max_detect_ultrasonic;
+
+    detectSensor[1] =
+        ultrasonicDistance[1] > min_detect_ultrasonic &&
+        ultrasonicDistance[1] < max_detect_ultrasonic;
+
+    detectSensor[2] =
+        ultrasonicDistance[2] > min_detect_ultrasonic &&
+        ultrasonicDistance[2] < max_detect_ultrasonic;
+
+    // if ((detectSensor[0] || detectSensor[1] || detectSensor[2]) &&
+    //     !itemDetected)
+    // {
+    //   itemDetected = true;
+    //   detectStartTime = millis();
+    // }
+    bool detected =
+        detectSensor[0] ||
+        detectSensor[1] ||
+        detectSensor[2];
+
+    if (detected)
+    {
+      if (!itemDetected)
+      {
+        if (buffer_ultrasonic < threshold_buffer_ultrasonic)
+        {
+          buffer_ultrasonic++;
+        }
+
+        if (buffer_ultrasonic >= threshold_buffer_ultrasonic)
+        {
+          itemDetected = true;
+          detectStartTime = millis();
+        }
+      }
+    }
+    else
+    {
+      buffer_ultrasonic = 0;
+      itemDetected = false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(15));
+  }
+}
+
+void vTaskServo(void *pvParameters)
+{
+  for (;;)
+  {
+    if (!servoTaskEnable)
+    {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+
+    if (millis() - lastDetectTime < detectCooldown)
+    {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    bool empty = false;
+
+    if (itemDetected)
+    {
+      if (millis() - detectStartTime < pushDelay)
+      {
+        vTaskDelay(pdMS_TO_TICKS(5));
+        continue;
+      }
+    }
+    // xSemaphoreTake(conveyorMutex, portMAX_DELAY);
     if (xSemaphoreTake(conveyorMutex, portMAX_DELAY) == pdTRUE)
     {
+
       if (!conveyorQueue.empty())
       {
         ConveyorTask ct = conveyorQueue.front();
 
-        bool distance = false;
-
-        switch (ct.gate)
+        if (detectSensor[0] && ct.gate == 1)
         {
-        case 1:
-          // distance = readUltrasonic(TRIG1, ECHO1);
-          if (digitalRead(TRIG1) == HIGH)
-          {
-            distance = true;
-          }
-          break;
+          lastDetectTime = millis();
 
-        case 2:
-          if (digitalRead(TRIG2) == HIGH)
-          {
-            distance = true;
-          }
-          break;
+          // digitalWrite(CONVEYOR_PIN, LOW);
 
-        case 3:
-          if (digitalRead(TRIG3) == HIGH)
-          {
-            distance = true;
-          }
-          break;
-        }
+          Serial.println("Dorong ke Gate 1");
 
-        if (distance == true)
-        {
-          buffer_ultrasonic++;
-        }
-        else
-        {
-          if (buffer_ultrasonic > 0)
-            buffer_ultrasonic--;
-        }
-        Serial.printf("Ultrasonic Gate %d: %.2f cm, Buffer: %d\n", ct.gate, distance, buffer_ultrasonic);
-
-        if (distance < 12 && buffer_ultrasonic >= threshold_buffer_ultrasonic)
-        {
-          Serial.printf("Ultrasonic Gate %d: %.2f cm, Dorong ke Gate %d\n", ct.gate, distance, ct.gate);
-          digitalWrite(CONVEYOR_PIN, LOW);
-
-          xSemaphoreGive(conveyorMutex);
-
-          vTaskDelay(pdMS_TO_TICKS(pushDelay));
-
-          xSemaphoreTake(conveyorMutex, portMAX_DELAY);
-
-          openGate(ct.gate);
+          openGate(1);
 
           conveyorQueue.pop();
+
+          itemDetected = false;
           buffer_ultrasonic = 0;
+
+          detectSensor[0] = false;
+          detectSensor[1] = false;
+          detectSensor[2] = false;
+        }
+        else if (detectSensor[1] && ct.gate == 2)
+        {
+          lastDetectTime = millis();
+
+          digitalWrite(CONVEYOR_PIN, LOW);
+
+          Serial.println("Dorong ke Gate 2");
+
+          openGate(2);
+
+          conveyorQueue.pop();
+
+          itemDetected = false;
+          buffer_ultrasonic = 0;
+
+          detectSensor[0] = false;
+          detectSensor[1] = false;
+          detectSensor[2] = false;
+        }
+        else if (ct.gate == 3)
+        {
+          // pertama kali sensor 3 mendeteksi
+          if (detectSensor[2] && !gate3DelayActive)
+          {
+            gate3DelayActive = true;
+            gate3DelayStart = millis();
+
+            Serial.println("Gate 3 terdeteksi");
+          }
+
+          // setelah terdeteksi tunggu 1 detik
+          if (gate3DelayActive &&
+              millis() - gate3DelayStart >= gate3ExtraDelay)
+          {
+            gate3DelayActive = false;
+
+            lastDetectTime = millis();
+
+            digitalWrite(CONVEYOR_PIN, LOW);
+
+            Serial.println("Dorong ke Gate 3");
+
+            openGate(3);
+
+            conveyorQueue.pop();
+
+            itemDetected = false;
+            buffer_ultrasonic = 0;
+
+            detectSensor[0] = false;
+            detectSensor[1] = false;
+            detectSensor[2] = false;
+          }
         }
       }
-
+      empty = conveyorQueue.empty();
       xSemaphoreGive(conveyorMutex);
     }
 
-    vTaskDelay(pdMS_TO_TICKS(20));
+    if (empty)
+    {
+      ultrasonicTaskEnable = false;
+      servoTaskEnable = false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
