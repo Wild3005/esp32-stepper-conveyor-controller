@@ -30,17 +30,12 @@ size_t SHIFT595_COUNT = 2;
 #define TRIG1 21
 #define TRIG2 32
 #define TRIG3 26
-// #define ECHO1 22
-// #define ECHO2 33
-// #define ECHO3 27
 
 // ================= STEPPER CONFIG =================
 #define STEPS_PER_MOVE 2048
 
 //| =================== GLOBAL VARIABLE ===================
 std::vector<uint8_t> shiftBuffer;
-const float min_detect_ultrasonic = 3.0f;
-const float max_detect_ultrasonic = 9.0f;
 
 // delay untuk pergatian item yang jauh
 bool waitingDelay = false;
@@ -58,42 +53,17 @@ bool gateOpened[NUM_GATES] = {false};
 unsigned long gateOpenTime[NUM_GATES] = {0};
 const int gateDuration = 450;
 
-unsigned long lastUltrasonicRead = 0;
-const int ultrasonicInterval = 25;
-
 unsigned long lastQueueEmptyTime = 0;
 const int stopDelay = 1000;
 
-unsigned long lastDetectTime = 0;
-const int detectCooldown = 1500;
-
-bool gate3DelayActive = false;
-unsigned long gate3DelayStart = 0;
-const unsigned long gate3ExtraDelay = 1000; // ms
-
-unsigned long pushTimer = 0;
-const int pushDelay = 540;
+const int pushDelay = 100;
 uint8_t buffer_ultrasonic = 5;
 const int threshold_buffer_ultrasonic = 4;
-
-static bool state_global_delay = false;
+bool detect_to_nodetect = false;
+bool prev_detect_to_nodetect = false;
 
 volatile bool ultrasonicTaskEnable = false;
 volatile bool servoTaskEnable = false;
-volatile bool itemDetected = false;
-unsigned long detectStartTime = 0;
-
-volatile bool detectSensor[NUM_GATES] =
-    {
-        false,
-        false,
-        false};
-
-volatile float ultrasonicDistance[NUM_GATES] =
-    {
-        0,
-        0,
-        0};
 
 std::vector<ShiftStepper> steppers;
 bool motorsConfigured = false;
@@ -113,7 +83,6 @@ bool controlMotor(int item);
 int resolveMotorIndex(int item);
 void processQueue();
 void controlConveyor();
-float readUltrasonic(int trig, int echo);
 void processConveyorEnd();
 void setupMotors();
 void syncMotorResources();
@@ -129,8 +98,10 @@ bool motorStarted = false;
 
 // ================= WIFI & MQTT =================
 unsigned long lastReconnectAttempt = 0;
-const char *ssid = "realme10";
-const char *password = "paansih7";
+// const char *ssid = "realme10";
+// const char *password = "paansih7";
+const char *ssid = "Wild";
+const char *password = "12345678";
 const char *mqtt_server = "broker.emqx.io";
 const int mqtt_port = 1883;
 
@@ -278,20 +249,6 @@ void openGate(int gate)
   }
 }
 
-float readUltrasonic(int trig, int echo)
-{
-  digitalWrite(trig, LOW);
-  delayMicroseconds(2);
-  digitalWrite(trig, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(trig, LOW);
-
-  float duration = pulseIn(echo, HIGH, 10000);
-  float distance = duration * 0.034f / 2.0f;
-  distance = distance == 0 ? 15.0 : distance; // Jika tidak ada echo, set jarak ke 15 cm (tidak terdeteksi)
-  return distance;
-}
-
 void controlConveyor()
 {
   bool anyGateOpen = false;
@@ -312,10 +269,6 @@ void controlConveyor()
   }
 
   bool queueNotEmpty = false;
-
-  // xSemaphoreTake(conveyorMutex, portMAX_DELAY);
-  // queueNotEmpty = !conveyorQueue.empty();
-  // xSemaphoreGive(conveyorMutex);
 
   if (xSemaphoreTake(conveyorMutex, portMAX_DELAY) == pdTRUE)
   {
@@ -475,30 +428,8 @@ void processQueue()
         motorStarted = true;
       }
 
-      // if (motorStarted && steppers[idx].distanceToGo() == 0)
-      // {
-      //   ConveyorTask ct;
-      //   ct.gate = currentTask.gate;
-      //   conveyorQueue.push(ct);
-
-      //   motorBusy = false;
-      //   Serial.println("Task selesai");
-      //   prev_index = current_index;
-      // }
-
       if (motorStarted && steppers[idx].distanceToGo() == 0)
       {
-        // xSemaphoreTake(conveyorMutex, portMAX_DELAY);
-
-        // ConveyorTask ct;
-        // ct.gate = currentTask.gate;
-        // conveyorQueue.push(ct);
-
-        // ultrasonicTaskEnable = true;
-        // servoTaskEnable = true;
-
-        // xSemaphoreGive(conveyorMutex);
-
         if (xSemaphoreTake(conveyorMutex, portMAX_DELAY) == pdTRUE)
         {
           ConveyorTask ct;
@@ -528,35 +459,6 @@ void shiftOut595(uint8_t *data, size_t size)
     shiftOut(DATA_PIN, CLOCK_PIN, MSBFIRST, data[i]);
   }
   digitalWrite(LATCH_PIN, HIGH);
-}
-
-static const char *mqttStateToStr(int state)
-{
-  switch (state)
-  {
-  case MQTT_CONNECTION_TIMEOUT:
-    return "MQTT_CONNECTION_TIMEOUT";
-  case MQTT_CONNECTION_LOST:
-    return "MQTT_CONNECTION_LOST";
-  case MQTT_CONNECT_FAILED:
-    return "MQTT_CONNECT_FAILED";
-  case MQTT_DISCONNECTED:
-    return "MQTT_DISCONNECTED";
-  case MQTT_CONNECTED:
-    return "MQTT_CONNECTED";
-  case MQTT_CONNECT_BAD_PROTOCOL:
-    return "MQTT_CONNECT_BAD_PROTOCOL";
-  case MQTT_CONNECT_BAD_CLIENT_ID:
-    return "MQTT_CONNECT_BAD_CLIENT_ID";
-  case MQTT_CONNECT_UNAVAILABLE:
-    return "MQTT_CONNECT_UNAVAILABLE";
-  case MQTT_CONNECT_BAD_CREDENTIALS:
-    return "MQTT_CONNECT_BAD_CREDENTIALS";
-  case MQTT_CONNECT_UNAUTHORIZED:
-    return "MQTT_CONNECT_UNAUTHORIZED";
-  default:
-    return "MQTT_UNKNOWN";
-  }
 }
 
 void setupMotors()
@@ -760,9 +662,6 @@ void setup()
   pinMode(TRIG1, INPUT);
   pinMode(TRIG2, INPUT);
   pinMode(TRIG3, INPUT);
-  // pinMode(ECHO1, INPUT);
-  // pinMode(ECHO2, INPUT);
-  // pinMode(ECHO3, INPUT);
 
   randomSeed(micros());
   setupWIFI();
@@ -794,7 +693,6 @@ void setup()
 // ================= LOOP (KOSONG) =================
 void loop()
 {
-  // Kosong, semua sudah diambil alih oleh FreeRTOS Scheduler
 }
 
 // ================= FREE RTOS TASKS DEFINITIONS =================
@@ -857,25 +755,33 @@ void vTaskConveyorServo(void *pvParameters)
         switch (ct.gate)
         {
         case 1:
-          // distance = readUltrasonic(TRIG1, ECHO1);
           if (digitalRead(TRIG1) == HIGH)
           {
             distance = true;
+            detect_to_nodetect = true;
           }
+          else
+            detect_to_nodetect = false;
           break;
 
         case 2:
           if (digitalRead(TRIG2) == HIGH)
           {
             distance = true;
+            detect_to_nodetect = true;
           }
+          else
+            detect_to_nodetect = false;
           break;
 
         case 3:
           if (digitalRead(TRIG3) == HIGH)
           {
             distance = true;
+            detect_to_nodetect = true;
           }
+          else
+            detect_to_nodetect = false;
           break;
         }
 
@@ -897,14 +803,19 @@ void vTaskConveyorServo(void *pvParameters)
 
           xSemaphoreGive(conveyorMutex);
 
-          vTaskDelay(pdMS_TO_TICKS(pushDelay));
+                    // test
+          if (prev_detect_to_nodetect == true && detect_to_nodetect == false)
+          {
+            vTaskDelay(pdMS_TO_TICKS(pushDelay));
+            xSemaphoreTake(conveyorMutex, portMAX_DELAY);
 
-          xSemaphoreTake(conveyorMutex, portMAX_DELAY);
+            openGate(ct.gate);
 
-          openGate(ct.gate);
+            conveyorQueue.pop();
+            buffer_ultrasonic = 0;
+          }
 
-          conveyorQueue.pop();
-          buffer_ultrasonic = 0;
+          prev_detect_to_nodetect = detect_to_nodetect;
         }
       }
 
